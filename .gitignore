@@ -1,0 +1,19 @@
+# Build output
+/build/
+build/
+cmake-build-*/
+
+# CMake user presets / cache
+CMakeUserPresets.json
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dear ImGui runtime state (window layout / docking)
+imgui.ini
