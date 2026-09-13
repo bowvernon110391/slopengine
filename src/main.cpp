@@ -19,10 +19,58 @@ namespace {
 
 constexpr float PI = 3.14159265358979323846f;
 
-// Feed every SDL event to ImGui's SDL2 backend so it can track input focus.
+// True while the fly-camera owns the mouse (toggled with F1). This lives at
+// namespace scope because Window::setEventHook() takes a plain function
+// pointer, so the hook below cannot capture a local variable.
+bool g_cursorCaptured = true;
+
+// Feed SDL events to ImGui's SDL2 backend so it can track input focus.
+//
+// While the camera owns the mouse, mouse events are withheld entirely. In
+// relative mode SDL still reports motion (pinned near the window centre) along
+// with button and wheel events, which would otherwise let the GUI hover, drag
+// and scroll behind the camera's back.
 void imguiEventHook(const SDL_Event& e)
 {
+    if (g_cursorCaptured) {
+        switch (e.type) {
+        case SDL_MOUSEMOTION:
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP:
+        case SDL_MOUSEWHEEL:
+            return;
+        default:
+            break;
+        }
+    }
     ImGui_ImplSDL2_ProcessEvent(&e);
+}
+
+// Remove every trace of mouse state from ImGui for this frame.
+//
+// Must be called after ImGui::NewFrame() -- which flushes the queued backend
+// events into io -- and before the first widget, so the whole frame is inert.
+//
+// ClearInputMouse() covers position, buttons, wheel and down-durations. The
+// click-tracking fields below are not covered by it. The timestamps in
+// particular must be sent back to a "never clicked" value: UpdateMouseInputs()
+// treats a click landing within MouseDoubleClickTime of MouseClickedTime[] as a
+// repeat, so a stale pre-capture click time would turn the first click after
+// releasing capture into a spurious double-click.
+// (MouseDragMaxDistanceSqr[] needs no reset: IsMouseDragging/IsMouseClicked both
+// bail out when MouseDown[] is false.)
+void suppressImGuiMouse(ImGuiIO& io)
+{
+    io.ClearInputMouse();
+    for (int i = 0; i < IM_ARRAYSIZE(io.MouseDown); ++i) {
+        io.MouseClicked[i]          = false;
+        io.MouseClickedCount[i]     = 0;
+        io.MouseClickedLastCount[i] = 0;
+        io.MouseReleased[i]         = false;
+        io.MouseClickedTime[i]      = -FLT_MAX;
+        io.MouseReleasedTime[i]     = -FLT_MAX;
+    }
+    io.MouseDelta = ImVec2(0.0f, 0.0f);
 }
 
 // Append one face of the cube (two triangles) with an outward normal and a
@@ -325,7 +373,8 @@ int main(int argc, char* argv[])
     bool wireframe = false;
     bool wasF = false;
 
-    bool cursorCaptured = true;   // F1 toggles fly-camera <-> UI interaction
+    // g_cursorCaptured (F1 toggles fly-camera <-> UI interaction) is declared
+    // at namespace scope so imguiEventHook() can consult it too.
     bool wasF1 = false;
 
     float fpsSmooth = 0.0f;
@@ -351,17 +400,30 @@ int main(int argc, char* argv[])
         // camera and interacting with the ImGui windows.
         bool isF1 = window.keyDown(SDL_SCANCODE_F1);
         if (isF1 && !wasF1) {
-            cursorCaptured = !cursorCaptured;
-            window.setRelativeMouseMode(cursorCaptured);
+            g_cursorCaptured = !g_cursorCaptured;
+            window.setRelativeMouseMode(g_cursorCaptured);
         }
         wasF1 = isF1;
 
         // --- ImGui frame --------------------------------------------------
+        ImGuiIO& io = ImGui::GetIO();
+
+        // While the camera owns the mouse, tell ImGui to ignore mouse input
+        // entirely for this frame. ImGui evaluates this flag in NewFrame(),
+        // where it clears the hovered window and disables mouse interactions.
+        if (g_cursorCaptured)
+            io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+        else
+            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        ImGuiIO& io = ImGui::GetIO();
+        // Also wipe the accumulated mouse state (position, buttons, click
+        // tracking) so no widget can hover or respond this frame.
+        if (g_cursorCaptured)
+            suppressImGuiMouse(io);
 
         // --- Camera input -------------------------------------------------
         float fwd = 0.0f, rgt = 0.0f, up = 0.0f;
@@ -377,7 +439,7 @@ int main(int argc, char* argv[])
 
         float mdx = 0.0f, mdy = 0.0f;
         window.mouseDelta(mdx, mdy);
-        if (cursorCaptured && (mdx != 0.0f || mdy != 0.0f)) camera.processMouse(mdx, mdy);
+        if (g_cursorCaptured && (mdx != 0.0f || mdy != 0.0f)) camera.processMouse(mdx, mdy);
 
         // --- ImGui UI (FPS counter + camera properties) --------------------
         float fps = (dt > 0.0f) ? 1.0f / dt : 0.0f;
