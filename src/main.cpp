@@ -1,4 +1,5 @@
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -12,8 +13,11 @@
 
 #include "Camera.h"
 #include "Mesh.h"
-#include "Shader.h"
 #include "Window.h"
+#include "core/Types.h"
+#include "renderer/Renderer.h"
+#include "scene/Scene.h"
+#include "scene/World.h"
 
 namespace {
 
@@ -50,15 +54,6 @@ void imguiEventHook(const SDL_Event& e)
 //
 // Must be called after ImGui::NewFrame() -- which flushes the queued backend
 // events into io -- and before the first widget, so the whole frame is inert.
-//
-// ClearInputMouse() covers position, buttons, wheel and down-durations. The
-// click-tracking fields below are not covered by it. The timestamps in
-// particular must be sent back to a "never clicked" value: UpdateMouseInputs()
-// treats a click landing within MouseDoubleClickTime of MouseClickedTime[] as a
-// repeat, so a stale pre-capture click time would turn the first click after
-// releasing capture into a spurious double-click.
-// (MouseDragMaxDistanceSqr[] needs no reset: IsMouseDragging/IsMouseClicked both
-// bail out when MouseDown[] is false.)
 void suppressImGuiMouse(ImGuiIO& io)
 {
     io.ClearInputMouse();
@@ -73,13 +68,12 @@ void suppressImGuiMouse(ImGuiIO& io)
     io.MouseDelta = ImVec2(0.0f, 0.0f);
 }
 
-// Append one face of the cube (two triangles) with an outward normal and a
-// per-face color. Corners are wound CCW when viewed from outside, so back-face
-// culling works as expected.
+// ---------------------------------------------------------------------------
+// Procedural geometry (unchanged from the original demo).
+// ---------------------------------------------------------------------------
+
 void pushFace(std::vector<Vertex>& out, const glm::vec3& n, const glm::vec3& color)
 {
-    // Pick a reference vector not parallel to the normal, then build a
-    // tangent/bitangent pair that spans the face.
     glm::vec3 ref = (std::fabs(n.y) < 0.9f) ? glm::vec3(0.0f, 1.0f, 0.0f)
                                             : glm::vec3(1.0f, 0.0f, 0.0f);
     glm::vec3 t = glm::normalize(glm::cross(n, ref));
@@ -105,20 +99,18 @@ void pushFace(std::vector<Vertex>& out, const glm::vec3& n, const glm::vec3& col
     }
 }
 
-// A unit cube centered at the origin (side length 1).
 std::vector<Vertex> makeCube()
 {
     std::vector<Vertex> verts;
-    pushFace(verts, glm::vec3( 0.0f, 0.0f, 1.0f), glm::vec3(0.90f, 0.25f, 0.25f)); // front
-    pushFace(verts, glm::vec3( 0.0f, 0.0f,-1.0f), glm::vec3(0.90f, 0.55f, 0.20f)); // back
-    pushFace(verts, glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.20f, 0.80f, 0.25f)); // left
-    pushFace(verts, glm::vec3( 1.0f, 0.0f, 0.0f), glm::vec3(0.25f, 0.35f, 0.90f)); // right
-    pushFace(verts, glm::vec3( 0.0f, 1.0f, 0.0f), glm::vec3(0.90f, 0.90f, 0.25f)); // top
-    pushFace(verts, glm::vec3( 0.0f,-1.0f, 0.0f), glm::vec3(0.70f, 0.25f, 0.80f)); // bottom
+    pushFace(verts, glm::vec3( 0.0f, 0.0f, 1.0f), glm::vec3(0.90f, 0.25f, 0.25f));
+    pushFace(verts, glm::vec3( 0.0f, 0.0f,-1.0f), glm::vec3(0.90f, 0.55f, 0.20f));
+    pushFace(verts, glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.20f, 0.80f, 0.25f));
+    pushFace(verts, glm::vec3( 1.0f, 0.0f, 0.0f), glm::vec3(0.25f, 0.35f, 0.90f));
+    pushFace(verts, glm::vec3( 0.0f, 1.0f, 0.0f), glm::vec3(0.90f, 0.90f, 0.25f));
+    pushFace(verts, glm::vec3( 0.0f,-1.0f, 0.0f), glm::vec3(0.70f, 0.25f, 0.80f));
     return verts;
 }
 
-// Append a single triangle with per-vertex normals and a shared color.
 void addTriangle(std::vector<Vertex>& out,
                  const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
                  const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
@@ -129,7 +121,6 @@ void addTriangle(std::vector<Vertex>& out,
     out.push_back(Vertex{c, nc, color});
 }
 
-// Append a flat circular cap (triangle fan) at height y, facing +Y or -Y.
 void addCap(std::vector<Vertex>& verts, int sectors, float radius, float y,
             bool up, const glm::vec3& color)
 {
@@ -145,7 +136,6 @@ void addCap(std::vector<Vertex>& verts, int sectors, float radius, float y,
     }
 }
 
-// A UV-sphere centered at the origin with smooth normals.
 std::vector<Vertex> makeSphere(int rings, int sectors, float radius, const glm::vec3& color)
 {
     std::vector<Vertex> verts;
@@ -166,7 +156,6 @@ std::vector<Vertex> makeSphere(int rings, int sectors, float radius, const glm::
             glm::vec3 v10 = point(phi1, th0);
             glm::vec3 v11 = point(phi1, th1);
 
-            // Skip the degenerate triangles at the poles.
             if (r != 0) {
                 addTriangle(verts, v00, v01, v10,
                             v00 / radius, v01 / radius, v10 / radius, color);
@@ -180,7 +169,6 @@ std::vector<Vertex> makeSphere(int rings, int sectors, float radius, const glm::
     return verts;
 }
 
-// A cylinder centered at the origin with its axis along Y, including flat caps.
 std::vector<Vertex> makeCylinder(int sectors, float radius, float halfHeight, const glm::vec3& color)
 {
     std::vector<Vertex> verts;
@@ -207,12 +195,11 @@ std::vector<Vertex> makeCylinder(int sectors, float radius, float halfHeight, co
     return verts;
 }
 
-// A right cone centered at the origin, axis along Y, apex at +Y.
 std::vector<Vertex> makeCone(int sectors, float radius, float height, const glm::vec3& color)
 {
     std::vector<Vertex> verts;
     const float halfH = height * 0.5f;
-    const float m = radius / height;                 // side slope
+    const float m = radius / height;
     const float inv = 1.0f / std::sqrt(1.0f + m * m);
     const glm::vec3 apex(0.0f, halfH, 0.0f);
 
@@ -235,7 +222,6 @@ std::vector<Vertex> makeCone(int sectors, float radius, float height, const glm:
     return verts;
 }
 
-// A torus centered at the origin, lying in the XZ plane (hole along Y).
 std::vector<Vertex> makeTorus(int majorSegs, int minorSegs,
                               float majorR, float minorR, const glm::vec3& color)
 {
@@ -273,7 +259,6 @@ std::vector<Vertex> makeTorus(int majorSegs, int minorSegs,
     return verts;
 }
 
-// A checkerboard ground plane (gridSize x gridSize cells) in the XZ plane.
 std::vector<Vertex> makeGround(int gridSize, float cell, float y)
 {
     std::vector<Vertex> verts;
@@ -290,7 +275,6 @@ std::vector<Vertex> makeGround(int gridSize, float cell, float y)
                              ? glm::vec3(0.45f, 0.45f, 0.47f)
                              : glm::vec3(0.28f, 0.28f, 0.30f);
 
-            // Wound CCW when viewed from above (+Y) so normals point up.
             verts.push_back(Vertex{glm::vec3(x0, y, z0), glm::vec3(0.0f, 1.0f, 0.0f), color});
             verts.push_back(Vertex{glm::vec3(x1, y, z1), glm::vec3(0.0f, 1.0f, 0.0f), color});
             verts.push_back(Vertex{glm::vec3(x1, y, z0), glm::vec3(0.0f, 1.0f, 0.0f), color});
@@ -301,6 +285,24 @@ std::vector<Vertex> makeGround(int gridSize, float cell, float y)
         }
     }
     return verts;
+}
+
+// ---------------------------------------------------------------------------
+// Scene building helpers
+// ---------------------------------------------------------------------------
+
+Entity addMeshEntity(Scene& scene, MeshHandle mesh, MaterialHandle material,
+                     const glm::vec3& position, const glm::vec3& scale)
+{
+    Entity e = scene.create();
+
+    Transform* t = scene.transforms().get(e);
+    if (t) { t->position = position; t->scale = scale; }
+
+    MeshRenderer& mr = scene.meshes().add(e, MeshRenderer{});
+    mr.mesh     = mesh;
+    mr.material = material;
+    return e;
 }
 
 } // namespace
@@ -336,35 +338,95 @@ int main(int argc, char* argv[])
     ImGui_ImplOpenGL3_Init("#version 330");
     window.setEventHook(imguiEventHook);
 
-    // Shaders are copied next to the executable by CMake. The single .glsl
-    // file contains both stages, and #includes reusable functions.
+    // --- Renderer ---------------------------------------------------------
+    // Shaders are copied next to the executable by CMake.
     std::string base = SDL_GetBasePath();
-    Shader shader;
-    if (!shader.load(base + "shaders/basic.glsl")) {
+    Renderer renderer;
+    if (!renderer.init(base)) {
+        SDL_Log("Renderer init failed (shader load).");
         return 1;
     }
 
-    // Report the #define flags the shader source declares.
-    for (const std::string& d : shader.defines()) {
-        SDL_Log("Shader define: %s", d.c_str());
+    // --- GPU resources ----------------------------------------------------
+    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeGround(24, 1.0f, -0.5f))));
+    MeshHandle cubeMesh    = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCube())));
+    MeshHandle sphereMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeSphere(24, 32, 1.0f, glm::vec3(0.25f, 0.55f, 0.90f)))));
+    MeshHandle cylMesh     = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCylinder(32, 0.6f, 0.6f, glm::vec3(0.90f, 0.45f, 0.20f)))));
+    MeshHandle coneMesh    = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCone(32, 0.7f, 1.4f, glm::vec3(0.20f, 0.80f, 0.45f)))));
+    MeshHandle torusMesh   = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeTorus(32, 24, 0.5f, 0.18f, glm::vec3(0.90f, 0.30f, 0.60f)))));
+
+    Material groundMat;
+    groundMat.specPower    = 16.0f;
+    groundMat.specStrength = 0.05f;
+
+    Material shapeMat;
+    shapeMat.specPower    = 48.0f;
+    shapeMat.specStrength = 0.40f;
+
+    MaterialHandle groundMaterial = renderer.materials().add(groundMat);
+    MaterialHandle shapeMaterial  = renderer.materials().add(shapeMat);
+
+    // --- Scene ------------------------------------------------------------
+    World world;
+    Scene& scene = world.activeScene();
+
+    addMeshEntity(scene, groundMesh, groundMaterial,
+                  glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f));
+
+    const glm::vec3 shapePositions[5] = {
+        glm::vec3(-4.0f, 1.0f, -2.0f),
+        glm::vec3(-2.0f, 1.0f, -2.0f),
+        glm::vec3( 0.0f, 1.0f, -2.0f),
+        glm::vec3( 2.0f, 1.0f, -2.0f),
+        glm::vec3( 4.0f, 1.0f, -2.0f),
+    };
+    const MeshHandle shapeMeshes[5] = { cubeMesh, sphereMesh, cylMesh, coneMesh, torusMesh };
+    Entity shapeEntities[5];
+    for (int i = 0; i < 5; ++i) {
+        shapeEntities[i] = addMeshEntity(scene, shapeMeshes[i], shapeMaterial,
+                                         shapePositions[i], glm::vec3(1.0f));
     }
 
-    Mesh cube(makeCube());
-    Mesh sphere(makeSphere(24, 32, 1.0f, glm::vec3(0.25f, 0.55f, 0.90f)));
-    Mesh cylinder(makeCylinder(32, 0.6f, 0.6f, glm::vec3(0.90f, 0.45f, 0.20f)));
-    Mesh cone(makeCone(32, 0.7f, 1.4f, glm::vec3(0.20f, 0.80f, 0.45f)));
-    Mesh torus(makeTorus(32, 24, 0.5f, 0.18f, glm::vec3(0.90f, 0.30f, 0.60f)));
-    Mesh ground(makeGround(24, 1.0f, -0.5f));
+    // Directional light with shadows enabled.
+    Entity sunEntity = scene.create();
+    {
+        Transform* t = scene.transforms().get(sunEntity);
+        if (t) t->rotation = glm::quat(glm::vec3(glm::radians(-50.0f),
+                                                 glm::radians(-35.0f), 0.0f));
+        LightComponent& lc = scene.lights().add(sunEntity, LightComponent{});
+        lc.type        = LightType::Directional;
+        lc.color       = glm::vec3(1.0f, 0.97f, 0.90f);
+        lc.intensity   = 1.0f;
+        lc.castsShadow = true;
+    }
 
-    Camera camera;
-    camera.setAspect(static_cast<float>(window.width()) / window.height());
+    // Two dynamic point lights WITHOUT shadows.
+    Entity lightAEntity = scene.create();
+    {
+        LightComponent& lc = scene.lights().add(lightAEntity, LightComponent{});
+        lc.type        = LightType::Point;
+        lc.color       = glm::vec3(1.0f, 0.35f, 0.20f);
+        lc.intensity   = 3.0f;
+        lc.range       = 7.0f;
+        lc.castsShadow = false;
+    }
+    Entity lightBEntity = scene.create();
+    {
+        LightComponent& lc = scene.lights().add(lightBEntity, LightComponent{});
+        lc.type        = LightType::Point;
+        lc.color       = glm::vec3(0.25f, 0.55f, 1.0f);
+        lc.intensity   = 3.0f;
+        lc.range       = 7.0f;
+        lc.castsShadow = false;
+    }
 
-    // Global GL state.
-    gl::Enable(gl::DEPTH_TEST);
-    gl::DepthFunc(gl::LEQUAL);
-    gl::Enable(gl::CULL_FACE);
-    gl::CullFace(gl::BACK);
-    gl::FrontFace(gl::CCW);
+    // Camera entity (the CameraComponent owns the camera state).
+    Entity cameraEntity = scene.create();
+    scene.cameras().add(cameraEntity, CameraComponent{});
+
+    // Sun direction controls (degrees), applied to the sun transform each frame.
+    float sunPitchDeg = -50.0f;
+    float sunYawDeg   = -35.0f;
 
     window.setRelativeMouseMode(true);
 
@@ -372,9 +434,6 @@ int main(int argc, char* argv[])
     float elapsed = 0.0f;
     bool wireframe = false;
     bool wasF = false;
-
-    // g_cursorCaptured (F1 toggles fly-camera <-> UI interaction) is declared
-    // at namespace scope so imguiEventHook() can consult it too.
     bool wasF1 = false;
 
     float fpsSmooth = 0.0f;
@@ -385,8 +444,11 @@ int main(int argc, char* argv[])
         Uint64 now = SDL_GetTicks64();
         float dt = static_cast<float>(now - last) / 1000.0f;
         last = now;
-        if (dt > 0.25f) dt = 0.25f; // clamp the (potentially large) first frame
+        if (dt > 0.25f) dt = 0.25f;
         elapsed += dt;
+
+        CameraComponent* camComp = scene.cameras().get(cameraEntity);
+        Camera& camera = camComp->camera;
 
         // Toggle wireframe with F (rising-edge detection).
         bool isF = window.keyDown(SDL_SCANCODE_F);
@@ -396,8 +458,7 @@ int main(int argc, char* argv[])
         }
         wasF = isF;
 
-        // F1 toggles mouse capture so you can switch between flying the
-        // camera and interacting with the ImGui windows.
+        // F1 toggles mouse capture.
         bool isF1 = window.keyDown(SDL_SCANCODE_F1);
         if (isF1 && !wasF1) {
             g_cursorCaptured = !g_cursorCaptured;
@@ -407,29 +468,22 @@ int main(int argc, char* argv[])
 
         // --- ImGui frame --------------------------------------------------
         ImGuiIO& io = ImGui::GetIO();
-
-        // While the camera owns the mouse, tell ImGui to ignore mouse input
-        // entirely for this frame. ImGui evaluates this flag in NewFrame(),
-        // where it clears the hovered window and disables mouse interactions.
-        if (g_cursorCaptured)
-            io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
-        else
-            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+        if (g_cursorCaptured) io.ConfigFlags |=  ImGuiConfigFlags_NoMouse;
+        else                  io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        // Also wipe the accumulated mouse state (position, buttons, click
-        // tracking) so no widget can hover or respond this frame.
-        if (g_cursorCaptured)
-            suppressImGuiMouse(io);
+        if (g_cursorCaptured) suppressImGuiMouse(io);
 
         // --- Camera input -------------------------------------------------
+        camera.setAspect(static_cast<float>(window.width()) / window.height());
+
         float fwd = 0.0f, rgt = 0.0f, up = 0.0f;
         if (!io.WantCaptureKeyboard) {
-            if (window.keyDown(SDL_SCANCODE_W) || window.keyDown(SDL_SCANCODE_UP))   fwd += 1.0f;
-            if (window.keyDown(SDL_SCANCODE_S) || window.keyDown(SDL_SCANCODE_DOWN)) fwd -= 1.0f;
+            if (window.keyDown(SDL_SCANCODE_W) || window.keyDown(SDL_SCANCODE_UP))    fwd += 1.0f;
+            if (window.keyDown(SDL_SCANCODE_S) || window.keyDown(SDL_SCANCODE_DOWN))  fwd -= 1.0f;
             if (window.keyDown(SDL_SCANCODE_D) || window.keyDown(SDL_SCANCODE_RIGHT)) rgt += 1.0f;
             if (window.keyDown(SDL_SCANCODE_A) || window.keyDown(SDL_SCANCODE_LEFT))  rgt -= 1.0f;
             if (window.keyDown(SDL_SCANCODE_SPACE)) up += 1.0f;
@@ -441,10 +495,39 @@ int main(int argc, char* argv[])
         window.mouseDelta(mdx, mdy);
         if (g_cursorCaptured && (mdx != 0.0f || mdy != 0.0f)) camera.processMouse(mdx, mdy);
 
-        // --- ImGui UI (FPS counter + camera properties) --------------------
+        // --- Animate the scene --------------------------------------------
+        for (int i = 0; i < 5; ++i) {
+            Transform* t = scene.transforms().get(shapeEntities[i]);
+            if (!t) continue;
+            const float spin = elapsed * (0.5f + 0.2f * i);
+            const glm::quat yaw   = glm::quat(glm::vec3(0.0f, spin, 0.0f));
+            const glm::quat tilt  = glm::quat(glm::vec3(std::sin(elapsed + i) * 0.5f, 0.0f, 0.0f));
+            t->rotation = yaw * tilt;
+        }
+
+        // The two point lights orbit the shape gallery (dynamic lights).
+        {
+            Transform* ta = scene.transforms().get(lightAEntity);
+            if (ta) {
+                const float a = elapsed * 1.1f;
+                ta->position = glm::vec3(std::cos(a) * 3.5f, 1.8f, -2.0f + std::sin(a) * 3.0f);
+            }
+            Transform* tb = scene.transforms().get(lightBEntity);
+            if (tb) {
+                const float b = elapsed * 1.1f + PI;
+                tb->position = glm::vec3(std::cos(b) * 3.5f, 2.4f, -2.0f + std::sin(b) * 3.0f);
+            }
+        }
+
+        Transform* sunT = scene.transforms().get(sunEntity);
+        if (sunT) {
+            sunT->rotation = glm::quat(glm::vec3(glm::radians(sunPitchDeg),
+                                                 glm::radians(sunYawDeg), 0.0f));
+        }
+
+        // --- ImGui UI -----------------------------------------------------
         float fps = (dt > 0.0f) ? 1.0f / dt : 0.0f;
         fpsSmooth = (fpsSmooth == 0.0f) ? fps : fpsSmooth * 0.95f + fps * 0.05f;
-
         fpsHistory[fpsHistoryCount % 120] = fps;
         ++fpsHistoryCount;
 
@@ -479,49 +562,67 @@ int main(int argc, char* argv[])
         camera.setMoveSpeed(moveSpeed);
         camera.setMouseSensitivity(mouseSens);
         camera.setFovDegrees(fovDeg);
-
         ImGui::End();
 
-        // --- Render -------------------------------------------------------
-        gl::Viewport(0, 0, window.width(), window.height());
-        gl::ClearColor(0.10f, 0.12f, 0.16f, 1.0f);
-        gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+        ImGui::SetNextWindowPos(ImVec2(430, 110), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Lighting");
 
-        shader.use();
-        shader.setMat4("uProjection", camera.projectionMatrix());
-        shader.setMat4("uView", camera.viewMatrix());
-        shader.setVec3("uLightDir", glm::normalize(glm::vec3(-0.5f, -1.0f, -0.3f)));
-        shader.setVec3("uLightColor", glm::vec3(1.0f, 0.98f, 0.92f));
-        shader.setVec3("uViewPos", camera.position());
-
-        // Ground.
-        shader.setMat4("uModel", glm::mat4(1.0f));
-        ground.draw();
-
-        // A rotating gallery of shapes (cube, sphere, cylinder, cone, torus).
-        const glm::vec3 positions[5] = {
-            glm::vec3(-4.0f, 1.0f, -2.0f),
-            glm::vec3(-2.0f, 1.0f, -2.0f),
-            glm::vec3( 0.0f, 1.0f, -2.0f),
-            glm::vec3( 2.0f, 1.0f, -2.0f),
-            glm::vec3( 4.0f, 1.0f, -2.0f),
-        };
-        Mesh* shapes[5] = { &cube, &sphere, &cylinder, &cone, &torus };
-        for (int i = 0; i < 5; ++i) {
-            float spin = elapsed * (0.5f + 0.2f * i);
-            glm::mat4 model = glm::translate(glm::mat4(1.0f), positions[i])
-                            * glm::rotate(glm::mat4(1.0f), spin, glm::vec3(0.0f, 1.0f, 0.0f))
-                            * glm::rotate(glm::mat4(1.0f), std::sin(elapsed + i) * 0.5f, glm::vec3(1.0f, 0.0f, 0.0f));
-            shader.setMat4("uModel", model);
-            shapes[i]->draw();
+        LightComponent* sun = scene.lights().get(sunEntity);
+        if (sun) {
+            ImGui::TextUnformatted("Directional light (shadow-casting)");
+            ImGui::ColorEdit3("Sun color", glm::value_ptr(sun->color));
+            ImGui::SliderFloat("Sun intensity", &sun->intensity, 0.0f, 3.0f, "%.2f");
+            ImGui::Checkbox("Casts shadow", &sun->castsShadow);
+            ImGui::SliderFloat("Sun pitch", &sunPitchDeg, -89.0f, -5.0f, "%.0f deg");
+            ImGui::SliderFloat("Sun yaw",   &sunYawDeg,  -180.0f, 180.0f, "%.0f deg");
         }
+        ImGui::Separator();
 
-        // Draw the ImGui UI on top of the 3D scene.
+        LightComponent* la = scene.lights().get(lightAEntity);
+        Transform*      ta = scene.transforms().get(lightAEntity);
+        if (la) {
+            ImGui::TextUnformatted("Point light A (no shadow)");
+            ImGui::ColorEdit3("A color", glm::value_ptr(la->color));
+            ImGui::SliderFloat("A intensity", &la->intensity, 0.0f, 10.0f, "%.2f");
+            ImGui::SliderFloat("A range", &la->range, 1.0f, 20.0f, "%.2f");
+            if (ta) ImGui::Text("A pos: %.2f, %.2f, %.2f", ta->position.x, ta->position.y, ta->position.z);
+        }
+        ImGui::Separator();
+
+        LightComponent* lb = scene.lights().get(lightBEntity);
+        Transform*      tb = scene.transforms().get(lightBEntity);
+        if (lb) {
+            ImGui::TextUnformatted("Point light B (no shadow)");
+            ImGui::ColorEdit3("B color", glm::value_ptr(lb->color));
+            ImGui::SliderFloat("B intensity", &lb->intensity, 0.0f, 10.0f, "%.2f");
+            ImGui::SliderFloat("B range", &lb->range, 1.0f, 20.0f, "%.2f");
+            if (tb) ImGui::Text("B pos: %.2f, %.2f, %.2f", tb->position.x, tb->position.y, tb->position.z);
+        }
+        ImGui::End();
+
         ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        // --- Update + render through the renderer --------------------------
+        world.update(dt);
+
+        RenderView view;
+        view.scene     = &scene;
+        view.camera    = camera;
+        view.viewport  = Viewport{ 0, 0, window.width(), window.height() };
+        view.passes    = Pass_Default;
+        view.layerMask = 1u;
+        view.order     = 0;
+
+        renderer.setOutputSize(window.width(), window.height());
+
+        std::vector<RenderView> views;
+        views.push_back(view);
+        renderer.renderFrame(views, scene);
 
         window.swap();
     }
+
+    renderer.shutdown();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();

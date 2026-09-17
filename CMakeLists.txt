@@ -66,6 +66,21 @@ add_executable(sdl2_opengl_demo WIN32
     src/Mesh.cpp
     src/Camera.cpp
     src/Window.cpp
+    src/scene/Scene.cpp
+    src/scene/World.cpp
+    src/renderer/DrawList.cpp
+    src/renderer/RenderQueue.cpp
+    src/renderer/RenderTargetPool.cpp
+    src/renderer/ResourceCaches.cpp
+    src/renderer/ShaderCache.cpp
+    src/renderer/RenderPass.cpp
+    src/renderer/FrameGraph.cpp
+    src/renderer/Renderer.cpp
+    src/renderer/passes/ShadowPass.cpp
+    src/renderer/passes/ForwardPass.cpp
+    src/renderer/passes/ResolvePass.cpp
+    src/renderer/passes/FinalPostPass.cpp
+    src/renderer/passes/UIPass.cpp
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp

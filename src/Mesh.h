@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 #include "GL.h"
+#include "core/Types.h"
 
 // Interleaved vertex layout (position, normal, color) - see Mesh.cpp.
 struct Vertex
@@ -27,10 +28,14 @@ public:
 
     void draw() const;
 
+    // Local-space AABB computed from the vertex positions.
+    const AABB& bounds() const { return m_bounds; }
+
 private:
     gl::GLuint  m_vao = 0;
     gl::GLuint  m_vbo = 0;
     gl::GLuint  m_ebo = 0;
     gl::GLsizei m_count = 0;
     bool        m_indexed = false;
+    AABB        m_bounds;
 };

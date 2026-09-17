@@ -41,6 +41,9 @@ Mesh::Mesh(const std::vector<Vertex>& vertices,
     }
 
     gl::BindVertexArray(0);
+
+    // Local-space bounds from the vertex positions.
+    for (const Vertex& v : vertices) m_bounds.expand(v.position);
 }
 
 Mesh::~Mesh()

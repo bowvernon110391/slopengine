@@ -302,8 +302,36 @@ void Shader::setVec3(const char* name, const glm::vec3& v) const
     gl::Uniform3fv(loc, 1, glm::value_ptr(v));
 }
 
+void Shader::setVec4(const char* name, const glm::vec4& v) const
+{
+    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    gl::Uniform4fv(loc, 1, glm::value_ptr(v));
+}
+
 void Shader::setFloat(const char* name, float v) const
 {
     gl::GLint loc = gl::GetUniformLocation(m_program, name);
     gl::Uniform1f(loc, v);
+}
+
+void Shader::setInt(const char* name, int v) const
+{
+    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    gl::Uniform1i(loc, v);
+}
+
+void Shader::setVec3Array(const char* name, int count, const glm::vec3* values) const
+{
+    if (count <= 0 || !values) return;
+    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    if (loc < 0) return;
+    gl::Uniform3fv(loc, count, glm::value_ptr(values[0]));
+}
+
+void Shader::setFloatArray(const char* name, int count, const float* values) const
+{
+    if (count <= 0 || !values) return;
+    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    if (loc < 0) return;
+    gl::Uniform1fv(loc, count, values);
 }

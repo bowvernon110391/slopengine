@@ -6,10 +6,15 @@ cmake-build-*/
 # CMake user presets / cache
 CMakeUserPresets.json
 
-# IDE
-.vs/
-.vscode/
-.idea/
+# Every dot-prefixed directory (editor / tool / AI-agent state):
+# .vs, .vscode, .idea, .agents, .reasonix, .cache, ...
+# NOTE: git never ignores .git itself. This pattern also matches .github,
+# so it is re-included below - delete that line if you want CI folders ignored.
+.*/
+!.github/
+
+# Reasonix tooling config (machine-specific)
+reasonix.toml
 
 # OS
 .DS_Store
