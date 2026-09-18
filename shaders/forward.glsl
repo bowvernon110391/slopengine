@@ -42,6 +42,9 @@ uniform vec3  uAlbedo;
 uniform float uSpecPower;
 uniform float uSpecStrength;
 
+// Flat ambient irradiance tint (multiplied by albedo). Set from Scene::ambient.
+uniform vec3  uAmbient;
+
 // Directional light.
 uniform int   uDirLightEnabled;
 uniform vec3  uDirLightDir;     // travel direction

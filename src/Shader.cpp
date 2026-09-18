@@ -218,6 +218,9 @@ Shader::~Shader()
 
 bool Shader::load(const std::string& path)
 {
+    // Locations are owned by the linked program, so they cannot outlive it.
+    m_uniformCache.clear();
+
     // 1) Recursively expand #includes into a single combined source string.
     std::vector<std::string> stack;
     std::string combined;
@@ -285,6 +288,16 @@ bool Shader::hasDefine(const std::string& name) const
     return false;
 }
 
+gl::GLint Shader::location(const char* name) const
+{
+    auto it = m_uniformCache.find(name);
+    if (it != m_uniformCache.end()) return it->second;
+
+    const gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    m_uniformCache.emplace(name, loc);
+    return loc;
+}
+
 void Shader::use() const
 {
     gl::UseProgram(m_program);
@@ -292,38 +305,43 @@ void Shader::use() const
 
 void Shader::setMat4(const char* name, const glm::mat4& mat) const
 {
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
+    if (loc < 0) return;
     gl::UniformMatrix4fv(loc, 1, 0, glm::value_ptr(mat));
 }
 
 void Shader::setVec3(const char* name, const glm::vec3& v) const
 {
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
+    if (loc < 0) return;
     gl::Uniform3fv(loc, 1, glm::value_ptr(v));
 }
 
 void Shader::setVec4(const char* name, const glm::vec4& v) const
 {
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
+    if (loc < 0) return;
     gl::Uniform4fv(loc, 1, glm::value_ptr(v));
 }
 
 void Shader::setFloat(const char* name, float v) const
 {
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
+    if (loc < 0) return;
     gl::Uniform1f(loc, v);
 }
 
 void Shader::setInt(const char* name, int v) const
 {
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
+    if (loc < 0) return;
     gl::Uniform1i(loc, v);
 }
 
 void Shader::setVec3Array(const char* name, int count, const glm::vec3* values) const
 {
     if (count <= 0 || !values) return;
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
     if (loc < 0) return;
     gl::Uniform3fv(loc, count, glm::value_ptr(values[0]));
 }
@@ -331,7 +349,7 @@ void Shader::setVec3Array(const char* name, int count, const glm::vec3* values) 
 void Shader::setFloatArray(const char* name, int count, const float* values) const
 {
     if (count <= 0 || !values) return;
-    gl::GLint loc = gl::GetUniformLocation(m_program, name);
+    const gl::GLint loc = location(name);
     if (loc < 0) return;
     gl::Uniform1fv(loc, count, values);
 }

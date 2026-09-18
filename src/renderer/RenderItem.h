@@ -21,4 +21,9 @@ struct RenderItem
     std::uint32_t flags     = 0;
     std::uint32_t id        = 0;   // entity id
     std::uint32_t layerMask = 1u;
+
+    // Whether the view's frustum kept this item. Culled items stay in the array
+    // so the shadow pass can still use them as casters, and so the AABB debug
+    // overlay can show what was rejected.
+    bool          visible    = true;
 };

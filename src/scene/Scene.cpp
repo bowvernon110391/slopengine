@@ -50,16 +50,22 @@ bool Scene::alive(Entity e) const
     return e.valid() && e.id < m_alive.size() && m_alive[e.id];
 }
 
-void Scene::computeWorldRecursive(Entity e, const glm::mat4& parentWorld)
+void Scene::computeWorldRecursive(Entity e, const glm::mat4& parentWorld, bool parentChanged)
 {
     Transform* t = m_transforms.get(e);
     if (!t) return;
 
+    // A frozen node under an unchanged parent cannot have moved, so neither can
+    // anything below it: the whole subtree is already up to date.
+    if (!parentChanged && t->isStatic && !t->dirty) return;
+
     t->worldMatrix = parentWorld * t->localMatrix();
     t->dirty = false;
 
+    // Everything below a node we just recomputed has to be revisited, even if it
+    // is itself static -- it may have been dragged along by this node.
     for (const Entity& child : t->children) {
-        computeWorldRecursive(child, t->worldMatrix);
+        computeWorldRecursive(child, t->worldMatrix, true);
     }
 }
 
@@ -70,20 +76,56 @@ void Scene::updateTransforms()
         const Transform* t = m_transforms.get(e);
         if (!t) continue;
         if (!t->parent.valid() || !m_transforms.has(t->parent)) {
-            computeWorldRecursive(e, glm::mat4(1.0f));
+            computeWorldRecursive(e, glm::mat4(1.0f), false);
         }
     }
 }
 
+void Scene::markDirtyRecursive(Entity e)
+{
+    Transform* t = m_transforms.get(e);
+    if (!t) return;
+
+    t->dirty = true;
+
+    // Any cached world-space bounds in this subtree are now stale.
+    if (MeshRenderer* mr = m_meshes.get(e)) {
+        mr->cachedWorldBounds.reset();
+    }
+
+    for (const Entity& child : t->children) {
+        markDirtyRecursive(child);
+    }
+}
+
+void Scene::markTransformDirty(Entity e)
+{
+    markDirtyRecursive(e);
+    m_boundsDirty = true;
+}
+
 void Scene::recomputeBounds()
 {
-    m_worldBounds.reset();
-
     const std::vector<MeshRenderer>& renderers = m_meshes.dense();
     const std::vector<Entity>&       owners    = m_meshes.entities();
 
+    // Frozen transforms keep their world matrix, so their contribution only has
+    // to be rebuilt when something was actually marked dirty.
+    if (m_boundsDirty) {
+        m_staticBounds.reset();
+        for (std::size_t i = 0; i < renderers.size(); ++i) {
+            const Transform* t = m_transforms.get(owners[i]);
+            if (!t || !t->isStatic || t->dirty) continue;   // dynamic: per-frame
+            m_staticBounds.merge(renderers[i].worldBounds.transformed(t->worldMatrix));
+        }
+        m_boundsDirty = false;
+    }
+
+    m_worldBounds = m_staticBounds;
+
     for (std::size_t i = 0; i < renderers.size(); ++i) {
         const Transform* t = m_transforms.get(owners[i]);
+        if (t && t->isStatic && !t->dirty) continue;        // already merged above
         const glm::mat4 world = t ? t->worldMatrix : glm::mat4(1.0f);
         m_worldBounds.merge(renderers[i].worldBounds.transformed(world));
     }

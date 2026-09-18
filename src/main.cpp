@@ -1,5 +1,7 @@
 #include <cmath>
+#include <cstddef>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -299,18 +301,103 @@ std::vector<Vertex> makeGround(int gridSize, float cell, float y)
 // Scene building helpers
 // ---------------------------------------------------------------------------
 
-Entity addMeshEntity(Scene& scene, MeshHandle mesh, MaterialHandle material,
-                     const glm::vec3& position, const glm::vec3& scale)
+// 'isStatic' freezes the transform and lets the renderer cache the object's
+// world-space bounds across frames.
+Entity addMeshEntity(Scene& scene, const MeshCache& meshes,
+                     MeshHandle mesh, MaterialHandle material,
+                     const glm::vec3& position, const glm::vec3& scale,
+                     bool isStatic = false)
 {
     Entity e = scene.create();
 
     Transform* t = scene.transforms().get(e);
-    if (t) { t->position = position; t->scale = scale; }
+    if (t) {
+        t->position = position;
+        t->scale    = scale;
+        t->isStatic = isStatic;
+    }
 
     MeshRenderer& mr = scene.meshes().add(e, MeshRenderer{});
     mr.mesh     = mesh;
     mr.material = material;
+    if (isStatic) mr.flags |= kMeshFlagStatic;
+
+    // Local-space bounds. The render queue transforms these into world space and
+    // uses them for frustum culling, depth sorting and the debug overlay -- so
+    // leaving them unset would silently disable all three.
+    const Mesh* m = meshes.get(mesh);
+    if (m) mr.worldBounds = m->bounds();
+
     return e;
+}
+
+// A handful of shared materials that props reuse, so the renderer's material
+// batching has something to batch and the uniform uploads actually collapse.
+std::vector<MaterialHandle> makeMaterialPalette(Renderer& renderer)
+{
+    const glm::vec3 albedos[6] = {
+        glm::vec3(0.85f, 0.30f, 0.25f),
+        glm::vec3(0.25f, 0.60f, 0.85f),
+        glm::vec3(0.35f, 0.80f, 0.45f),
+        glm::vec3(0.90f, 0.75f, 0.30f),
+        glm::vec3(0.70f, 0.40f, 0.85f),
+        glm::vec3(0.90f, 0.55f, 0.25f),
+    };
+
+    std::vector<MaterialHandle> palette;
+    palette.reserve(6);
+    for (int i = 0; i < 6; ++i) {
+        Material m;
+        m.albedo       = albedos[i];
+        m.specPower    = 16.0f + 8.0f * static_cast<float>(i);
+        m.specStrength = 0.15f + 0.06f * static_cast<float>(i);
+        palette.push_back(renderer.materials().add(m));
+    }
+    return palette;
+}
+
+// Scatters props over a +/-30 unit field. Roughly three quarters are static, so
+// the frozen-transform and cached-bounds paths actually get exercised.
+void spawnField(Scene& scene, const MeshCache& meshes,
+                const MeshHandle* shapes, int shapeCount,
+                const std::vector<MaterialHandle>& palette,
+                std::vector<Entity>& outDynamic)
+{
+    std::mt19937 rng(1337u);   // fixed seed: reproducible layouts
+    std::uniform_real_distribution<float> positionDist(-30.0f, 30.0f);
+    std::uniform_real_distribution<float> heightDist(0.5f, 6.0f);
+    std::uniform_real_distribution<float> scaleDist(0.5f, 1.6f);
+    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * PI);
+    std::uniform_int_distribution<int>    shapeDist(0, shapeCount - 1);
+    std::uniform_int_distribution<int>    materialDist(0, static_cast<int>(palette.size()) - 1);
+
+    const int kPropCount = 64;
+    for (int i = 0; i < kPropCount; ++i) {
+        const bool isStatic = (i % 4) != 0;
+
+        glm::vec3 position(positionDist(rng), heightDist(rng), positionDist(rng));
+        if (isStatic) {
+            // Snap so "static" really means unmoving.
+            position.x = std::floor(position.x);
+            position.z = std::floor(position.z);
+        }
+
+        Entity e = addMeshEntity(scene, meshes,
+                                 shapes[shapeDist(rng)],
+                                 palette[materialDist(rng)],
+                                 position,
+                                 glm::vec3(scaleDist(rng)),
+                                 isStatic);
+
+        if (!isStatic) {
+            Transform* t = scene.transforms().get(e);
+            if (t) {
+                t->rotation = glm::quat(glm::vec3(angleDist(rng) * 0.4f,
+                                                  angleDist(rng), 0.0f));
+            }
+            outDynamic.push_back(e);
+        }
+    }
 }
 
 } // namespace
@@ -378,8 +465,8 @@ int main(int argc, char* argv[])
     World world;
     Scene& scene = world.activeScene();
 
-    addMeshEntity(scene, groundMesh, groundMaterial,
-                  glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f));
+    addMeshEntity(scene, renderer.meshes(), groundMesh, groundMaterial,
+                  glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f), true);
 
     const glm::vec3 shapePositions[5] = {
         glm::vec3(-4.0f, 1.0f, -2.0f),
@@ -391,9 +478,17 @@ int main(int argc, char* argv[])
     const MeshHandle shapeMeshes[5] = { cubeMesh, sphereMesh, cylMesh, coneMesh, torusMesh };
     Entity shapeEntities[5];
     for (int i = 0; i < 5; ++i) {
-        shapeEntities[i] = addMeshEntity(scene, shapeMeshes[i], shapeMaterial,
-                                         shapePositions[i], glm::vec3(1.0f));
+        shapeEntities[i] = addMeshEntity(scene, renderer.meshes(), shapeMeshes[i],
+                                         shapeMaterial, shapePositions[i],
+                                         glm::vec3(1.0f));
     }
+
+    // --- Random prop field ------------------------------------------------
+    // A wider spread of objects sharing a small material palette: this is what
+    // exercises frustum culling, the static/dynamic split and material batching.
+    const std::vector<MaterialHandle> palette = makeMaterialPalette(renderer);
+    std::vector<Entity> dynamicProps;
+    spawnField(scene, renderer.meshes(), shapeMeshes, 5, palette, dynamicProps);
 
     // Directional light with shadows enabled.
     Entity sunEntity = scene.create();
@@ -443,6 +538,13 @@ int main(int argc, char* argv[])
     bool wireframe = false;
     bool wasF = false;
     bool wasF1 = false;
+
+    // Debug/measurement state.
+    bool        cullEnabled = true;
+    bool        showAABBs   = false;
+    std::size_t statVisible = 0;
+    std::size_t statCulled  = 0;
+    std::size_t statDraws   = 0;
 
     float fpsSmooth = 0.0f;
     float fpsHistory[120] = {0};
@@ -513,6 +615,18 @@ int main(int argc, char* argv[])
             t->rotation = yaw * tilt;
         }
 
+        // Only the dynamic props move; the static ones are frozen, which is what
+        // lets updateTransforms() skip their whole subtree.
+        for (std::size_t i = 0; i < dynamicProps.size(); ++i) {
+            Transform* t = scene.transforms().get(dynamicProps[i]);
+            if (!t) continue;
+            const float fi   = static_cast<float>(i);
+            const float spin = elapsed * (0.4f + 0.15f * static_cast<float>(i % 5));
+            const glm::quat yaw  = glm::quat(glm::vec3(0.0f, spin, 0.0f));
+            const glm::quat tilt = glm::quat(glm::vec3(std::sin(elapsed + fi) * 0.4f, 0.0f, 0.0f));
+            t->rotation = yaw * tilt;
+        }
+
         // The two point lights orbit the shape gallery (dynamic lights).
         {
             Transform* ta = scene.transforms().get(lightAEntity);
@@ -545,6 +659,67 @@ int main(int argc, char* argv[])
         ImGui::Text("Frame time: %.2f ms", dt * 1000.0f);
         int n = fpsHistoryCount < 120 ? fpsHistoryCount : 120;
         ImGui::PlotLines("##fps", fpsHistory, n, 0, nullptr, 0.0f, 240.0f, ImVec2(0, 50));
+
+        ImGui::Separator();
+        const std::size_t objectCount = scene.meshes().size();
+        std::size_t staticCount = 0;
+        for (const Transform& t : scene.transforms().dense()) {
+            if (t.isStatic) ++staticCount;
+        }
+        ImGui::Text("Objects: %d (static %d / dynamic %d)",
+                    static_cast<int>(objectCount),
+                    static_cast<int>(staticCount),
+                    static_cast<int>(objectCount - staticCount));
+        ImGui::Text("Visible: %d  Culled: %d",
+                    static_cast<int>(statVisible), static_cast<int>(statCulled));
+        ImGui::Text("Draw calls: %d", static_cast<int>(statDraws));
+
+        ImGui::Checkbox("Frustum culling", &cullEnabled);
+        ImGui::Checkbox("Show AABBs", &showAABBs);
+        renderer.setDebugAABBs(showAABBs);
+        ImGui::End();
+
+        // --- Shadow map debug ---------------------------------------------
+        // Built before renderFrame(), so the images shown are from the previous
+        // frame's shadow pass.
+        ImGui::SetNextWindowPos(ImVec2(10, 300), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Shadow Maps");
+
+        bool shadowDebug = renderer.shadowDebugEnabled();
+        if (ImGui::Checkbox("Enable preview", &shadowDebug)) {
+            renderer.setShadowDebugEnabled(shadowDebug);
+        }
+
+        float depthMin   = renderer.shadowDebugMin();
+        float depthMax   = renderer.shadowDebugMax();
+        bool  invertView = renderer.shadowDebugInvert();
+        ImGui::SliderFloat("Min depth", &depthMin, 0.0f, 1.0f, "%.4f");
+        ImGui::SliderFloat("Max depth", &depthMax, 0.0f, 1.0f, "%.4f");
+        ImGui::Checkbox("Invert", &invertView);
+        if (depthMax <= depthMin) depthMin = depthMax - 0.001f;
+        renderer.setShadowDebugRange(depthMin, depthMax, invertView);
+
+        const std::vector<ShadowMapView>& shadowViews = renderer.shadowMapViews();
+        ImGui::Separator();
+        ImGui::Text("Shadow maps: %d", static_cast<int>(shadowViews.size()));
+
+        if (shadowViews.empty()) {
+            ImGui::TextUnformatted(shadowDebug
+                ? "None (no light casts a shadow)"
+                : "Enable the preview to inspect the maps");
+        }
+
+        for (std::size_t i = 0; i < shadowViews.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::Text("Map %d  (%d x %d)", static_cast<int>(i),
+                        shadowViews[i].sourceSize, shadowViews[i].sourceSize);
+            if (shadowViews[i].texture != 0) {
+                ImGui::Image((ImTextureID)shadowViews[i].texture, ImVec2(256, 256));
+            } else {
+                ImGui::TextUnformatted("No preview available");
+            }
+            ImGui::PopID();
+        }
         ImGui::End();
 
         ImGui::SetNextWindowPos(ImVec2(10, 110), ImGuiCond_FirstUseEver);
@@ -574,6 +749,10 @@ int main(int argc, char* argv[])
 
         ImGui::SetNextWindowPos(ImVec2(430, 110), ImGuiCond_FirstUseEver);
         ImGui::Begin("Lighting");
+
+        ImGui::TextUnformatted("Scene ambient (flat, unshadowed)");
+        ImGui::ColorEdit3("Ambient", glm::value_ptr(scene.ambient));
+        ImGui::Separator();
 
         LightComponent* sun = scene.lights().get(sunEntity);
         if (sun) {
@@ -620,12 +799,17 @@ int main(int argc, char* argv[])
         view.passes    = Pass_Default;
         view.layerMask = 1u;
         view.order     = 0;
+        view.queue.setCullingEnabled(cullEnabled);
 
         renderer.setOutputSize(window.width(), window.height());
 
         std::vector<RenderView> views;
         views.push_back(view);
         renderer.renderFrame(views, scene);
+
+        statVisible = renderer.statVisible();
+        statCulled  = renderer.statCulled();
+        statDraws   = renderer.statDraws();
 
         window.swap();
     }

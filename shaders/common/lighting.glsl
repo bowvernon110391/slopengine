@@ -4,7 +4,7 @@
 //
 // The including stage must declare the following before the #include:
 //   varyings:   vNormal, vColor, vWorldPos
-//   uniforms:   uCameraPos, uAlbedo, uSpecPower, uSpecStrength,
+//   uniforms:   uCameraPos, uAlbedo, uSpecPower, uSpecStrength, uAmbient,
 //               uDirLightEnabled, uDirLightDir, uDirLightColor,
 //               uShadowEnabled, uLightSpaceMatrix, uShadowMap,
 //               uPointLightCount, uPointPos[], uPointColor[],
@@ -40,7 +40,9 @@ vec3 computeLighting(vec3 normal, vec3 baseColor, vec3 worldPos, vec3 cameraPos)
     vec3 N = normalize(normal);
     vec3 V = normalize(cameraPos - worldPos);
 
-    vec3 result = 0.18 * baseColor;   // ambient
+    // Ambient: incoming irradiance scaled by albedo, so a black surface stays
+    // black. Added unconditionally -- indirect light is not shadowed.
+    vec3 result = uAmbient * baseColor;
 
     if (uDirLightEnabled != 0) {
         vec3 L = normalize(-uDirLightDir);

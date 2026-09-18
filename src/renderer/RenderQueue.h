@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -19,22 +20,24 @@ class RenderQueue
 public:
     void clear();
 
-    // Shadow lists are built once per frame (all shadow-casting lights).
-    void buildShadowLists(const Scene& scene,
+    // Shadow lists are built once per frame (all shadow-casting lights). Every
+    // item is included: an object outside the camera frustum can still cast a
+    // shadow into view.
+    void buildShadowLists(Scene& scene,
                           const std::vector<Light>& lights,
                           const MeshCache& meshes,
                           const MaterialCache& materials,
                           std::uint32_t layerMask = 0xFFFFFFFFu);
 
-    // Camera lists are built per view.
-    void buildCameraLists(const Scene& scene,
+    // Camera lists are built per view, with frustum culling applied.
+    void buildCameraLists(Scene& scene,
                           const Camera& camera,
                           const MeshCache& meshes,
                           const MaterialCache& materials,
                           std::uint32_t layerMask);
 
     // Convenience: shadow lists + camera lists in one call.
-    void build(const Scene& scene,
+    void build(Scene& scene,
                const Camera& camera,
                const std::vector<Light>& lights,
                const MeshCache& meshes,
@@ -46,8 +49,18 @@ public:
     const DrawList& transparentList() const { return m_transparent; }
     const std::vector<DrawList>& shadowLists() const { return m_shadowLists; }
 
+    // Stats from the most recent buildCameraLists().
+    std::size_t visibleCount()  const { return m_visibleCount; }
+    std::size_t culledCount()   const { return m_culledCount; }
+    std::size_t drawCallCount() const { return m_opaque.size() + m_transparent.size(); }
+
+    // Measurement switch: with culling off the view keeps every item, so the
+    // rendered image is identical and only the counters change.
+    void setCullingEnabled(bool enabled) { m_cullingEnabled = enabled; }
+    bool cullingEnabled() const { return m_cullingEnabled; }
+
 private:
-    void collectItems(const Scene& scene,
+    void collectItems(Scene& scene,
                       const MeshCache& meshes,
                       const MaterialCache& materials,
                       std::uint32_t layerMask);
@@ -56,4 +69,8 @@ private:
     DrawList                m_opaque;
     DrawList                m_transparent;
     std::vector<DrawList>   m_shadowLists;
+
+    std::size_t m_visibleCount   = 0;
+    std::size_t m_culledCount    = 0;
+    bool        m_cullingEnabled = true;
 };

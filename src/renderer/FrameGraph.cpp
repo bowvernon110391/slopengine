@@ -135,6 +135,14 @@ void FrameGraph::render(Renderer& renderer, Scene& scene)
         runPass(renderer.shadowPass(), shadowCtx, true);
     }
 
+    // Hand the shadow targets to the renderer and refresh the debug previews
+    // while the depth textures are up to date. Done before the per-view loop,
+    // which rebinds its own framebuffer and viewport.
+    renderer.setFrameShadowMaps(shadowCtx.fboShadow);
+    if (renderer.shadowDebugEnabled()) {
+        renderer.renderShadowPreviews();
+    }
+
     // --- Per-view passes --------------------------------------------------
     for (RenderView& view : m_views) {
         view.lights = lights;
@@ -144,6 +152,10 @@ void FrameGraph::render(Renderer& renderer, Scene& scene)
         view.queue.buildCameraLists(*viewScene, view.camera,
                                     renderer.meshes(), renderer.materials(),
                                     view.layerMask);
+
+        renderer.addViewStats(view.queue.visibleCount(),
+                              view.queue.culledCount(),
+                              view.queue.drawCallCount());
 
         RenderContext ctx;
         ctx.queue        = &view.queue;
@@ -169,6 +181,9 @@ void FrameGraph::render(Renderer& renderer, Scene& scene)
         ctx.msaaSamples  = renderer.msaaSamples();
 
         runPass(renderer.forwardPass(),   ctx, (view.passes & Pass_Forward)   != 0);
+        // The debug overlay depth-tests against the MSAA target, so it has to
+        // run before the resolve (which drops the depth buffer).
+        runPass(renderer.debugAABBPass(), ctx, renderer.debugAABBs());
         runPass(renderer.resolvePass(),   ctx, (view.passes & Pass_Resolve)   != 0);
         // SSAO / Bloom are wired but disabled: targets are not acquired and
         // their pass bits are off in the default mask.

@@ -22,6 +22,11 @@ struct Transform
     glm::mat4 worldMatrix{ 1.0f };
     bool      dirty = true;
 
+    // When set, this node and its whole subtree skip world-matrix recomputation
+    // until something calls Scene::markTransformDirty(). A static subtree must
+    // not contain dynamic children.
+    bool isStatic = false;
+
     Entity              parent{};
     std::vector<Entity> children;
 
@@ -32,6 +37,14 @@ struct Transform
              * glm::scale(glm::mat4(1.0f), scale);
     }
 };
+
+// ---------------------------------------------------------------------------
+// MeshRenderer flags.
+// ---------------------------------------------------------------------------
+// Assert that this object never moves, so its world-space AABB can be cached
+// even when it sits under a dynamic hierarchy. Invalidated by
+// Scene::markTransformDirty().
+constexpr std::uint32_t kMeshFlagStatic = 1u << 0;
 
 // ---------------------------------------------------------------------------
 // MeshRenderer: which mesh + material to draw, visibility layer, bounds.
@@ -45,6 +58,13 @@ struct MeshRenderer
     std::uint32_t flags     = 0;
     std::uint32_t layerMask = 1u;
     AABB          worldBounds;
+
+    // World-space bounds cached across frames while the object is effectively
+    // static. 'cachedWorldMatrix' records the matrix they were derived from, so
+    // the cache is self-validating even if an ancestor moves. An invalid
+    // cachedWorldBounds means "not computed yet".
+    AABB      cachedWorldBounds;
+    glm::mat4 cachedWorldMatrix{ 0.0f };
 };
 
 // ---------------------------------------------------------------------------

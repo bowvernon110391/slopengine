@@ -7,6 +7,7 @@
 #include "renderer/RenderQueue.h"
 #include "renderer/RenderTargetPool.h"
 #include "renderer/ShaderCache.h"
+#include "scene/Scene.h"
 
 bool ForwardPass::setup(RenderContext& ctx)
 {
@@ -35,6 +36,11 @@ void ForwardPass::execute(RenderContext& ctx)
     m_shader->setMat4("uProjection", ctx.view->camera.projectionMatrix());
     m_shader->setMat4("uView", ctx.view->camera.viewMatrix());
     m_shader->setVec3("uCameraPos", ctx.view->camera.position());
+
+    // --- Ambient (per scene, shadows do not attenuate it) -----------------
+    const glm::vec3 ambient = ctx.scene ? glm::max(ctx.scene->ambient, glm::vec3(0.0f))
+                                        : glm::vec3(0.18f);
+    m_shader->setVec3("uAmbient", ambient);
 
     // --- Directional light (first one in the view) -----------------------
     const Light* dirLight = nullptr;
@@ -89,6 +95,11 @@ void ForwardPass::execute(RenderContext& ctx)
     const std::vector<RenderItem>& items = ctx.queue->frameItems();
 
     auto drawList = [&](const DrawList& list) {
+        // Opaque draws arrive grouped by material, so the material uniforms only
+        // need re-uploading when the batch changes rather than per draw.
+        const Material* lastMaterial = nullptr;
+        bool haveMaterialState = false;
+
         for (const DrawCommand& cmd : list.commands()) {
             if (cmd.itemIndex >= items.size()) continue;
             const RenderItem& item = items[cmd.itemIndex];
@@ -102,10 +113,15 @@ void ForwardPass::execute(RenderContext& ctx)
                 specStrength = item.material->specStrength;
             }
 
-            m_shader->setMat4 ("uModel",        item.model);
-            m_shader->setVec3 ("uAlbedo",       albedo);
-            m_shader->setFloat("uSpecPower",    specPower);
-            m_shader->setFloat("uSpecStrength", specStrength);
+            m_shader->setMat4("uModel", item.model);
+
+            if (!haveMaterialState || item.material != lastMaterial) {
+                m_shader->setVec3 ("uAlbedo",       albedo);
+                m_shader->setFloat("uSpecPower",    specPower);
+                m_shader->setFloat("uSpecStrength", specStrength);
+                lastMaterial = item.material;
+                haveMaterialState = true;
+            }
             item.mesh->draw();
         }
     };

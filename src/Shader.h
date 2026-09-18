@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -63,7 +64,14 @@ public:
     bool valid() const { return m_program != 0; }
 
 private:
+    // Resolve (and cache) the location of a uniform by name. Locations belong to
+    // the linked program, so the cache is cleared whenever a program is built.
+    // Misses are cached as -1 too, so a typo costs one lookup, not one per frame.
+    gl::GLint location(const char* name) const;
+
     gl::GLuint m_program = 0;
+
+    mutable std::unordered_map<std::string, gl::GLint> m_uniformCache;
 
     // Names of #defines discovered in the source (deduplicated, in order).
     std::vector<std::string> m_defines;

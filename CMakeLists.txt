@@ -76,10 +76,13 @@ add_executable(sdl2_opengl_demo WIN32
     src/renderer/RenderPass.cpp
     src/renderer/FrameGraph.cpp
     src/renderer/Renderer.cpp
+    src/renderer/Frustum.cpp
+    src/renderer/DebugDraw.cpp
     src/renderer/passes/ShadowPass.cpp
     src/renderer/passes/ForwardPass.cpp
     src/renderer/passes/ResolvePass.cpp
     src/renderer/passes/FinalPostPass.cpp
+    src/renderer/passes/DebugAABBPass.cpp
     src/renderer/passes/UIPass.cpp
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp

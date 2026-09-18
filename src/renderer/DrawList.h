@@ -36,7 +36,9 @@ public:
     const std::vector<DrawCommand>& commands() const { return m_commands; }
 
     // 'items' is RenderQueue::frameItems: the array the indices refer to.
-    void sortByMaterial(const std::vector<RenderItem>& items);
+    // Opaque geometry sorts by material first (fewer uniform changes) and
+    // front-to-back within each material group (early-z).
+    void sortByMaterial(const std::vector<RenderItem>& items, const glm::vec3& cameraPos);
     void sortFrontToBack(const std::vector<RenderItem>& items, const glm::vec3& cameraPos);
     void sortBackToFront(const std::vector<RenderItem>& items, const glm::vec3& cameraPos);
 

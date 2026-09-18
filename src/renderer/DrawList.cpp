@@ -14,13 +14,15 @@ float depthSqr(const RenderItem& item, const glm::vec3& cameraPos)
 
 } // namespace
 
-void DrawList::sortByMaterial(const std::vector<RenderItem>& items)
+void DrawList::sortByMaterial(const std::vector<RenderItem>& items, const glm::vec3& cameraPos)
 {
     std::stable_sort(m_commands.begin(), m_commands.end(),
-                     [&items](const DrawCommand& a, const DrawCommand& b) {
+                     [&items, &cameraPos](const DrawCommand& a, const DrawCommand& b) {
                          const RenderItem& ia = items[a.itemIndex];
                          const RenderItem& ib = items[b.itemIndex];
-                         return ia.material < ib.material;
+                         if (ia.material != ib.material) return ia.material < ib.material;
+                         // Same material: nearest first so early-z still helps.
+                         return depthSqr(ia, cameraPos) < depthSqr(ib, cameraPos);
                      });
 }
 
