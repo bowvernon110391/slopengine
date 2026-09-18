@@ -74,15 +74,23 @@ void suppressImGuiMouse(ImGuiIO& io)
 
 void pushFace(std::vector<Vertex>& out, const glm::vec3& n, const glm::vec3& color)
 {
+    // Unit cube, so each face is a 1x1 quad offset half a unit along its
+    // outward normal. Without this offset every face passes through the
+    // origin and the "cube" degenerates into six intersecting planes.
+    constexpr float half = 0.5f;
+
     glm::vec3 ref = (std::fabs(n.y) < 0.9f) ? glm::vec3(0.0f, 1.0f, 0.0f)
                                             : glm::vec3(1.0f, 0.0f, 0.0f);
     glm::vec3 t = glm::normalize(glm::cross(n, ref));
     glm::vec3 b = glm::cross(n, t);
 
-    glm::vec3 c0 = (-t - b) * 0.5f;
-    glm::vec3 c1 = ( t - b) * 0.5f;
-    glm::vec3 c2 = ( t + b) * 0.5f;
-    glm::vec3 c3 = (-t + b) * 0.5f;
+    // Centre of this face, sitting on the cube surface.
+    glm::vec3 center = n * half;
+
+    glm::vec3 c0 = center + (-t - b) * half;
+    glm::vec3 c1 = center + ( t - b) * half;
+    glm::vec3 c2 = center + ( t + b) * half;
+    glm::vec3 c3 = center + (-t + b) * half;
 
     const int idx[6] = {0, 1, 2, 0, 2, 3};
     for (int i = 0; i < 6; ++i) {
