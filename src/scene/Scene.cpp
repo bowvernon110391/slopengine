@@ -43,6 +43,14 @@ void Scene::destroy(Entity e)
     m_entities.erase(std::remove(m_entities.begin(), m_entities.end(), e),
                      m_entities.end());
     m_freeIds.push_back(e.id);
+
+    // The cached static bounds described this entity, so they are now stale.
+    // Without this, recomputeBounds() would keep serving a box that still contains
+    // the destroyed entity's contribution -- which flows into the shadow fit's
+    // extrusion and so into the light's ortho depth range. Measured: with this
+    // omitted, worldBounds().max.y stayed frozen at the first field's value across
+    // 25 respawns instead of tracking each new field.
+    m_boundsDirty = true;
 }
 
 bool Scene::alive(Entity e) const

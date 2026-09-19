@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <string>
@@ -387,9 +388,15 @@ struct Placement
 // the high ones throw shadows onto the ground and onto whatever sits beneath them.
 // Roughly three quarters are static, which is what exercises the frozen-transform
 // and cached-bounds paths.
+//
+// 'seed' is supplied by the caller so the same field can be regenerated, or a fresh
+// one produced, without editing the code. 'outProps' receives every prop so the
+// field can later be torn down; 'outDynamic' receives the subset that animates.
 void spawnField(Scene& scene, const MeshCache& meshes,
                 const MeshHandle* shapes, int shapeCount,
                 const std::vector<MaterialHandle>& palette,
+                std::uint32_t seed,
+                std::vector<Entity>& outProps,
                 std::vector<Entity>& outDynamic)
 {
     constexpr float kFieldRadius = 13.0f;   // < half the ground extent (16)
@@ -399,7 +406,7 @@ void spawnField(Scene& scene, const MeshCache& meshes,
     constexpr int   kPlaceTries  = 32;      // rejection attempts per prop
     constexpr float kPadding     = 1.15f;   // slack on each required clearance
 
-    std::mt19937 rng(1337u);   // fixed seed: reproducible layouts
+    std::mt19937 rng(seed);   // caller-supplied: a new seed gives a new layout
     std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
     std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * PI);
     std::uniform_real_distribution<float> floatHeightDist(kFloatYMin, kFloatYMax);
@@ -480,6 +487,11 @@ void spawnField(Scene& scene, const MeshCache& meshes,
                                  glm::vec3(bestXZ.x, y, bestXZ.y),
                                  glm::vec3(s),
                                  isStatic);
+
+        // Every prop is reported, not just the animated ones: respawning has to be
+        // able to tear the whole field down, and the static majority is otherwise
+        // unreachable.
+        outProps.push_back(e);
 
         if (!isStatic) {
             Transform* t = scene.transforms().get(e);
@@ -564,8 +576,33 @@ int main(int argc, char* argv[])
     // A wider spread of objects sharing a small material palette: this is what
     // exercises frustum culling, the static/dynamic split and material batching.
     const std::vector<MaterialHandle> palette = makeMaterialPalette(renderer);
-    std::vector<Entity> dynamicProps;
-    spawnField(scene, renderer.meshes(), shapeMeshes, 5, palette, dynamicProps);
+
+    // A fresh seed per launch, so the layout actually differs between runs. The
+    // "Re-randomise" button on the Performance tab draws a new one on demand, and
+    // the value is displayed so a layout can still be reported and reproduced.
+    //
+    // NOTE: std::random_device is non-deterministic on MSVC, which is what this
+    // project builds with. On some MinGW/libstdc++ builds it is deterministic, so
+    // if the layout ever becomes fixed again, mix in SDL_GetPerformanceCounter().
+    std::uint32_t placementSeed = std::random_device{}();
+
+    std::vector<Entity> propEntities;    // every prop, static and dynamic
+    std::vector<Entity> dynamicProps;    // the animated subset
+
+    // One code path for the initial spawn and for re-randomising, so the two cannot
+    // drift apart.
+    auto spawnProps = [&]() {
+        for (const Entity e : propEntities) {
+            if (scene.alive(e)) scene.destroy(e);
+        }
+        // Rebuilt from scratch, never appended to: destroying frees entity ids and
+        // create() reuses them, so a retained handle would alias a brand-new prop.
+        propEntities.clear();
+        dynamicProps.clear();
+        spawnField(scene, renderer.meshes(), shapeMeshes, 5, palette,
+                   placementSeed, propEntities, dynamicProps);
+    };
+    spawnProps();
 
     // Directional light with shadows enabled.
     Entity sunEntity = scene.create();
@@ -722,7 +759,25 @@ int main(int argc, char* argv[])
         ++fpsHistoryCount;
 
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Performance");
+        ImGui::SetNextWindowSize(ImVec2(500, 560), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Slop Engine");
+
+        // Sliders default to ~65% of the content width, which starves the label
+        // column and clips longer captions ("Poisson radius (texels)"). A fixed item
+        // width keeps every control consistent and leaves room for the text.
+        ImGui::PushItemWidth(240.0f);
+
+        // One window, one tab per former panel. Fixed size rather than auto-resize:
+        // the tabs differ a lot in height (Shadow Maps carries a 256x256 preview),
+        // so sizing to content would make the window jump on every switch.
+        //
+        // Note ImGui submits widgets for the ACTIVE tab only, so the per-frame setter
+        // calls inside a hidden panel do not run. That is harmless here: each value is
+        // only changed by a widget in its own panel and the destination keeps its last
+        // value, so a hidden tab simply leaves its settings as they were.
+        if (ImGui::BeginTabBar("##panels", ImGuiTabBarFlags_Reorderable)) {
+
+        if (ImGui::BeginTabItem("Performance")) {
         ImGui::Text("FPS: %.1f", fpsSmooth);
         ImGui::Text("Frame time: %.2f ms", dt * 1000.0f);
         int n = fpsHistoryCount < 120 ? fpsHistoryCount : 120;
@@ -742,16 +797,92 @@ int main(int argc, char* argv[])
                     static_cast<int>(statVisible), static_cast<int>(statCulled));
         ImGui::Text("Draw calls: %d", static_cast<int>(statDraws));
 
+        // Rebuilds the whole prop field from a new seed. Placed below the stats
+        // above so a mid-frame destroy cannot leave those numbers describing the
+        // previous field. The respawn happens before this frame's world.update()
+        // and renderFrame(), so transforms, bounds and the draw lists all pick it up
+        // within the same iteration.
+        if (ImGui::Button("Re-randomise placement")) {
+            placementSeed = std::random_device{}();
+            spawnProps();
+        }
+        ImGui::SameLine();
+        ImGui::Text("seed %u", static_cast<unsigned>(placementSeed));
+
         ImGui::Checkbox("Frustum culling", &cullEnabled);
         ImGui::Checkbox("Show AABBs", &showAABBs);
         renderer.setDebugAABBs(showAABBs);
-        ImGui::End();
+        ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Camera")) {
+        ImGui::TextUnformatted("F1 toggles mouse capture");
+
+        glm::vec3 camPos    = camera.position();
+        float     yawDeg    = glm::degrees(camera.yaw());
+        float     pitchDeg  = glm::degrees(camera.pitch());
+        float     moveSpeed = camera.moveSpeed();
+        float     mouseSens = camera.mouseSensitivity();
+        float     fovDeg    = camera.fovDegrees();
+
+        ImGui::DragFloat3("Position", glm::value_ptr(camPos), 0.05f);
+        ImGui::DragFloat("Yaw (deg)", &yawDeg, 0.5f);
+        ImGui::DragFloat("Pitch (deg)", &pitchDeg, 0.5f);
+        ImGui::SliderFloat("Move speed", &moveSpeed, 0.5f, 60.0f, "%.2f");
+        ImGui::SliderFloat("Mouse sensitivity", &mouseSens, 0.0001f, 0.02f, "%.4f");
+        ImGui::SliderFloat("FOV (deg)", &fovDeg, 20.0f, 120.0f, "%.1f");
+
+        camera.setPosition(camPos);
+        camera.setYawPitch(glm::radians(yawDeg), glm::radians(pitchDeg));
+        camera.setMoveSpeed(moveSpeed);
+        camera.setMouseSensitivity(mouseSens);
+        camera.setFovDegrees(fovDeg);
+        ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Lighting")) {
+        ImGui::TextUnformatted("Scene ambient (flat, unshadowed)");
+        ImGui::ColorEdit3("Ambient", glm::value_ptr(scene.ambient));
+        ImGui::Separator();
+
+        LightComponent* sun = scene.lights().get(sunEntity);
+        if (sun) {
+            ImGui::TextUnformatted("Directional light (shadow-casting)");
+            ImGui::ColorEdit3("Sun color", glm::value_ptr(sun->color));
+            ImGui::SliderFloat("Sun intensity", &sun->intensity, 0.0f, 3.0f, "%.2f");
+            ImGui::Checkbox("Casts shadow", &sun->castsShadow);
+            ImGui::SliderFloat("Sun pitch", &sunPitchDeg, -89.0f, -5.0f, "%.0f deg");
+            ImGui::SliderFloat("Sun yaw",   &sunYawDeg,  -180.0f, 180.0f, "%.0f deg");
+        }
+        ImGui::Separator();
+
+        LightComponent* la = scene.lights().get(lightAEntity);
+        Transform*      ta = scene.transforms().get(lightAEntity);
+        if (la) {
+            ImGui::TextUnformatted("Point light A (no shadow)");
+            ImGui::ColorEdit3("A color", glm::value_ptr(la->color));
+            ImGui::SliderFloat("A intensity", &la->intensity, 0.0f, 10.0f, "%.2f");
+            ImGui::SliderFloat("A range", &la->range, 1.0f, 20.0f, "%.2f");
+            if (ta) ImGui::Text("A pos: %.2f, %.2f, %.2f", ta->position.x, ta->position.y, ta->position.z);
+        }
+        ImGui::Separator();
+
+        LightComponent* lb = scene.lights().get(lightBEntity);
+        Transform*      tb = scene.transforms().get(lightBEntity);
+        if (lb) {
+            ImGui::TextUnformatted("Point light B (no shadow)");
+            ImGui::ColorEdit3("B color", glm::value_ptr(lb->color));
+            ImGui::SliderFloat("B intensity", &lb->intensity, 0.0f, 10.0f, "%.2f");
+            ImGui::SliderFloat("B range", &lb->range, 1.0f, 20.0f, "%.2f");
+            if (tb) ImGui::Text("B pos: %.2f, %.2f, %.2f", tb->position.x, tb->position.y, tb->position.z);
+        }
+        ImGui::EndTabItem();
+        }
 
         // --- Shadow map debug ---------------------------------------------
         // Built before renderFrame(), so the images shown are from the previous
         // frame's shadow pass.
-        ImGui::SetNextWindowPos(ImVec2(10, 300), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Shadow Maps");
+        if (ImGui::BeginTabItem("Shadow Maps")) {
 
         bool shadowDebug = renderer.shadowDebugEnabled();
         if (ImGui::Checkbox("Enable preview", &shadowDebug)) {
@@ -814,15 +945,14 @@ int main(int argc, char* argv[])
             }
             ImGui::PopID();
         }
-        ImGui::End();
+        ImGui::EndTabItem();
+        }
 
         // --- Shadow bias ----------------------------------------------------
-        // The depth bias the shadow lookup compares with, in its own window: it is
-        // the remaining lever now that polygon offset is off, and these three terms
-        // trade directly against each other (see slopeScaledBias() in
-        // shaders/common/lighting.glsl).
-        ImGui::SetNextWindowPos(ImVec2(430, 430), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Shadow Bias");
+        // The depth bias the shadow lookup compares with: it is the remaining lever
+        // now that polygon offset is off, and these three terms trade directly
+        // against each other (see slopeScaledBias() in common/lighting.glsl).
+        if (ImGui::BeginTabItem("Shadow Bias")) {
 
         float bias      = renderer.forwardPass().shadowBias();
         float slopeBias = renderer.forwardPass().shadowSlopeBias();
@@ -847,71 +977,13 @@ int main(int argc, char* argv[])
             "Lower bias keeps shadows attached to the object casting them but lets "
             "acne through; higher bias does the reverse. Polygon offset is disabled, "
             "so these are the only guard against acne.");
-        ImGui::End();
-
-        ImGui::SetNextWindowPos(ImVec2(10, 110), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Camera");
-        ImGui::TextUnformatted("F1 toggles mouse capture");
-
-        glm::vec3 camPos    = camera.position();
-        float     yawDeg    = glm::degrees(camera.yaw());
-        float     pitchDeg  = glm::degrees(camera.pitch());
-        float     moveSpeed = camera.moveSpeed();
-        float     mouseSens = camera.mouseSensitivity();
-        float     fovDeg    = camera.fovDegrees();
-
-        ImGui::DragFloat3("Position", glm::value_ptr(camPos), 0.05f);
-        ImGui::DragFloat("Yaw (deg)", &yawDeg, 0.5f);
-        ImGui::DragFloat("Pitch (deg)", &pitchDeg, 0.5f);
-        ImGui::SliderFloat("Move speed", &moveSpeed, 0.5f, 60.0f, "%.2f");
-        ImGui::SliderFloat("Mouse sensitivity", &mouseSens, 0.0001f, 0.02f, "%.4f");
-        ImGui::SliderFloat("FOV (deg)", &fovDeg, 20.0f, 120.0f, "%.1f");
-
-        camera.setPosition(camPos);
-        camera.setYawPitch(glm::radians(yawDeg), glm::radians(pitchDeg));
-        camera.setMoveSpeed(moveSpeed);
-        camera.setMouseSensitivity(mouseSens);
-        camera.setFovDegrees(fovDeg);
-        ImGui::End();
-
-        ImGui::SetNextWindowPos(ImVec2(430, 110), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Lighting");
-
-        ImGui::TextUnformatted("Scene ambient (flat, unshadowed)");
-        ImGui::ColorEdit3("Ambient", glm::value_ptr(scene.ambient));
-        ImGui::Separator();
-
-        LightComponent* sun = scene.lights().get(sunEntity);
-        if (sun) {
-            ImGui::TextUnformatted("Directional light (shadow-casting)");
-            ImGui::ColorEdit3("Sun color", glm::value_ptr(sun->color));
-            ImGui::SliderFloat("Sun intensity", &sun->intensity, 0.0f, 3.0f, "%.2f");
-            ImGui::Checkbox("Casts shadow", &sun->castsShadow);
-            ImGui::SliderFloat("Sun pitch", &sunPitchDeg, -89.0f, -5.0f, "%.0f deg");
-            ImGui::SliderFloat("Sun yaw",   &sunYawDeg,  -180.0f, 180.0f, "%.0f deg");
+        ImGui::EndTabItem();
         }
-        ImGui::Separator();
 
-        LightComponent* la = scene.lights().get(lightAEntity);
-        Transform*      ta = scene.transforms().get(lightAEntity);
-        if (la) {
-            ImGui::TextUnformatted("Point light A (no shadow)");
-            ImGui::ColorEdit3("A color", glm::value_ptr(la->color));
-            ImGui::SliderFloat("A intensity", &la->intensity, 0.0f, 10.0f, "%.2f");
-            ImGui::SliderFloat("A range", &la->range, 1.0f, 20.0f, "%.2f");
-            if (ta) ImGui::Text("A pos: %.2f, %.2f, %.2f", ta->position.x, ta->position.y, ta->position.z);
+        ImGui::EndTabBar();
         }
-        ImGui::Separator();
 
-        LightComponent* lb = scene.lights().get(lightBEntity);
-        Transform*      tb = scene.transforms().get(lightBEntity);
-        if (lb) {
-            ImGui::TextUnformatted("Point light B (no shadow)");
-            ImGui::ColorEdit3("B color", glm::value_ptr(lb->color));
-            ImGui::SliderFloat("B intensity", &lb->intensity, 0.0f, 10.0f, "%.2f");
-            ImGui::SliderFloat("B range", &lb->range, 1.0f, 20.0f, "%.2f");
-            if (tb) ImGui::Text("B pos: %.2f, %.2f, %.2f", tb->position.x, tb->position.y, tb->position.z);
-        }
+        ImGui::PopItemWidth();
         ImGui::End();
 
         ImGui::Render();

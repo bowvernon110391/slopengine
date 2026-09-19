@@ -69,14 +69,6 @@ const vec2 kPoissonDisc16[16] = vec2[16](
     vec2(-0.89206,  0.25323),
     vec2( 0.31453, -0.89836));
 
-// Rotate 'v' by 'angle' radians, used to decorrelate the tap pattern per pixel.
-vec2 rotate2(vec2 v, float angle)
-{
-    float s = sin(angle);
-    float c = cos(angle);
-    return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
-}
-
 // Interleaved gradient noise (Jimenez), returning [0, 1). Cheaper than a bit hash
 // and better distributed than a single fract() of the pixel coordinates.
 float interleavedGradientNoise(vec2 pixel)
@@ -106,11 +98,21 @@ float sampleShadow(vec3 worldPos, vec3 N, vec3 L)
     // per-pixel angle turns that into fine noise instead.
     float angle = interleavedGradientNoise(gl_FragCoord.xy) * 6.28318530718;
 
+    // Everything above is per-pixel, so the rotation and the biased reference depth
+    // are computed once here rather than once per tap. The loop is fetch-bound, so
+    // this is for clarity, not speed.
+    float sinA = sin(angle);
+    float cosA = cos(angle);
+    float refZ = proj.z - bias;
+
     float visible = 0.0;
     for (int i = 0; i < 16; ++i) {
-        vec2 offset = rotate2(kPoissonDisc16[i], angle) * stepSize;
+        vec2 d = kPoissonDisc16[i];   // plain local: a const initialised from a
+                                      // non-constant is a GLSL compile error
+        vec2 offset = vec2(cosA * d.x - sinA * d.y,
+                           sinA * d.x + cosA * d.y) * stepSize;
         float depth = texture(uShadowMap, proj.xy + offset).r;
-        visible += (proj.z - bias > depth) ? 0.0 : 1.0;
+        visible += (refZ > depth) ? 0.0 : 1.0;
     }
     return visible / 16.0;
 }
