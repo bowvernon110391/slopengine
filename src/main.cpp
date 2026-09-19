@@ -32,6 +32,11 @@ constexpr float PI = 3.14159265358979323846f;
 // the whole grounded tier floating or half-buried.
 constexpr float kGroundY = -0.5f;
 
+// Ground slab thickness, as a fraction of the ground's span. The ground is built
+// as a closed slab rather than a single-sided sheet so it reads as a solid from
+// any angle -- most obviously from below, where a sheet would simply vanish.
+constexpr float kGroundThicknessFraction = 0.10f;
+
 // True while the fly-camera owns the mouse (toggled with F1). This lives at
 // namespace scope because Window::setEventHook() takes a plain function
 // pointer, so the hook below cannot capture a local variable.
@@ -276,11 +281,23 @@ std::vector<Vertex> makeTorus(int majorSegs, int minorSegs,
     return verts;
 }
 
-std::vector<Vertex> makeGround(int gridSize, float cell, float y)
+// Builds the ground as a closed slab: the checkerboard top surface plus four side
+// walls and a bottom face. A closed solid reads correctly from any angle -- most
+// visibly from below, where a single-sided sheet would vanish -- and it also lets
+// the ground cast a shadow, which a sheet cannot do once the shadow pass starts
+// culling front faces.
+//
+// 'thickness' is how far the slab extends below 'y'. Passing 0 emits the bare
+// sheet this function used to produce.
+std::vector<Vertex> makeGround(int gridSize, float cell, float y, float thickness)
 {
     std::vector<Vertex> verts;
-    const float half = (gridSize * cell) * 0.5f;
+    const float half    = (gridSize * cell) * 0.5f;
+    const float yBottom = y - thickness;
 
+    // --- Top surface -------------------------------------------------------
+    // Each quad is wound counter-clockwise seen from above, so its normal faces
+    // +Y. The sides and bottom below follow the same convention.
     for (int iz = 0; iz < gridSize; ++iz) {
         for (int ix = 0; ix < gridSize; ++ix) {
             float x0 = -half + ix * cell;
@@ -301,6 +318,58 @@ std::vector<Vertex> makeGround(int gridSize, float cell, float y)
             verts.push_back(Vertex{glm::vec3(x1, y, z1), glm::vec3(0.0f, 1.0f, 0.0f), color});
         }
     }
+
+    if (thickness <= 0.0f) return verts;
+
+    // --- Sides and bottom --------------------------------------------------
+    // Slightly darker than the top, so the rim reads as an edge rather than a
+    // continuation of the ground.
+    const glm::vec3 sideColor  (0.20f, 0.20f, 0.22f);
+    const glm::vec3 bottomColor(0.14f, 0.14f, 0.16f);
+
+    // Emits a-b-c-d as two triangles, assuming the caller listed the corners
+    // counter-clockwise as seen from outside, so the normal faces outward.
+    auto addQuad = [&verts](const glm::vec3& a, const glm::vec3& b,
+                            const glm::vec3& c, const glm::vec3& d,
+                            const glm::vec3& n, const glm::vec3& color)
+    {
+        const Vertex va{a, n, color};
+        const Vertex vb{b, n, color};
+        const Vertex vc{c, n, color};
+        const Vertex vd{d, n, color};
+
+        verts.push_back(va);
+        verts.push_back(vb);
+        verts.push_back(vc);
+        verts.push_back(va);
+        verts.push_back(vc);
+        verts.push_back(vd);
+    };
+
+    // Corners, named by the sign of their x and z: A(-x,-z) B(+x,-z) C(+x,+z)
+    // D(-x,+z). Each wall runs bottom-then-top up one edge and back down the other.
+    const float h = half;
+
+    addQuad(glm::vec3(-h, yBottom, -h), glm::vec3(-h, y,       -h),
+            glm::vec3( h, y,       -h), glm::vec3( h, yBottom, -h),
+            glm::vec3(0.0f, 0.0f, -1.0f), sideColor);          // -Z wall
+
+    addQuad(glm::vec3(-h, yBottom,  h), glm::vec3( h, yBottom,  h),
+            glm::vec3( h, y,        h), glm::vec3(-h, y,        h),
+            glm::vec3(0.0f, 0.0f, 1.0f), sideColor);           // +Z wall
+
+    addQuad(glm::vec3( h, yBottom, -h), glm::vec3( h, y,       -h),
+            glm::vec3( h, y,        h), glm::vec3( h, yBottom,  h),
+            glm::vec3(1.0f, 0.0f, 0.0f), sideColor);           // +X wall
+
+    addQuad(glm::vec3(-h, yBottom, -h), glm::vec3(-h, yBottom,  h),
+            glm::vec3(-h, y,        h), glm::vec3(-h, y,       -h),
+            glm::vec3(-1.0f, 0.0f, 0.0f), sideColor);          // -X wall
+
+    addQuad(glm::vec3(-h, yBottom, -h), glm::vec3( h, yBottom, -h),
+            glm::vec3( h, yBottom,  h), glm::vec3(-h, yBottom,  h),
+            glm::vec3(0.0f, -1.0f, 0.0f), bottomColor);        // bottom, ccw from below
+
     return verts;
 }
 
@@ -547,7 +616,16 @@ int main(int argc, char* argv[])
     }
 
     // --- GPU resources ----------------------------------------------------
-    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeGround(32, 1.0f, kGroundY))));
+    // The ground is a closed slab whose thickness is kGroundThicknessFraction of
+    // its span, so it needs its grid dimensions here rather than only inside the
+    // mesh builder.
+    constexpr int   kGroundGrid = 32;
+    constexpr float kGroundCell = 1.0f;
+    constexpr float kGroundSpan = kGroundGrid * kGroundCell;
+
+    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(
+        new Mesh(makeGround(kGroundGrid, kGroundCell, kGroundY,
+                            kGroundSpan * kGroundThicknessFraction))));
     MeshHandle cubeMesh    = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCube())));
     MeshHandle sphereMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeSphere(24, 32, 1.0f, glm::vec3(0.25f, 0.55f, 0.90f)))));
     MeshHandle cylMesh     = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCylinder(32, 0.6f, 0.6f, glm::vec3(0.90f, 0.45f, 0.20f)))));
