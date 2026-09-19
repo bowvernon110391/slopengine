@@ -42,6 +42,12 @@ void ForwardPass::execute(RenderContext& ctx)
                                         : glm::vec3(0.18f);
     m_shader->setVec3("uAmbient", ambient);
 
+    // --- Shadow range/fade -------------------------------------------------
+    const float shadowDistance = ctx.shadowFit ? ctx.shadowFit->shadowDistance : 40.0f;
+    const float shadowFade     = ctx.shadowFit ? ctx.shadowFit->fadeFraction   : 0.0f;
+    m_shader->setFloat("uShadowDistance", shadowDistance);
+    m_shader->setFloat("uShadowFade", shadowFade);
+
     // --- Directional light (first one in the view) -----------------------
     const Light* dirLight = nullptr;
     for (const Light& l : ctx.view->lights) {

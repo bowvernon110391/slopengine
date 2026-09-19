@@ -33,7 +33,12 @@ public:
     void  setYawPitch(float yaw, float pitch);   // clamps pitch, rebuilds vectors
 
     float fovDegrees() const { return m_fovY * (180.0f / 3.14159265358979323846f); }
+    float fovRadians() const { return m_fovY; }
     void  setFovDegrees(float deg);
+
+    float aspect() const { return m_aspect; }
+    float zNear()  const { return m_zNear; }
+    float zFar()   const { return m_zFar; }
 
 private:
     void updateVectors();

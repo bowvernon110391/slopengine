@@ -12,6 +12,7 @@
 #include "renderer/RenderTargetPool.h"
 #include "renderer/ResourceCaches.h"
 #include "renderer/ShaderCache.h"
+#include "renderer/ShadowFit.h"
 #include "renderer/passes/DebugAABBPass.h"
 #include "renderer/passes/FinalPostPass.h"
 #include "renderer/passes/ForwardPass.h"
@@ -116,6 +117,11 @@ public:
     int  outputWidth()  const { return m_outputWidth; }
     int  outputHeight() const { return m_outputHeight; }
 
+    // How the directional light's ortho is fitted to the camera.
+    ShadowFitParams&       shadowFit()       { return m_shadowFit; }
+    const ShadowFitParams& shadowFit() const { return m_shadowFit; }
+    void setShadowFit(const ShadowFitParams& params) { m_shadowFit = params; }
+
     bool initialized() const { return m_initialized; }
 
 private:
@@ -153,6 +159,7 @@ private:
 
     gl::GLuint    m_fullscreenVAO = 0;
     std::uint32_t m_frameTag      = 1;
+    ShadowFitParams m_shadowFit;
     int           m_outputWidth   = 0;
     int           m_outputHeight  = 0;
     int           m_shadowMapSize = 2048;

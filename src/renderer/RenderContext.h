@@ -6,6 +6,7 @@
 
 #include "core/Types.h"
 #include "renderer/RenderView.h"
+#include "renderer/ShadowFit.h"
 
 class MeshCache;
 class MaterialCache;
@@ -33,6 +34,9 @@ struct RenderContext
     std::vector<glm::mat4>      lightSpaceMatrices;
     const std::vector<RenderItem>* shadowItems = nullptr;
     const std::vector<DrawList>*   shadowLists = nullptr;
+
+    // Shadow fit settings, so the forward pass can drive the fade uniforms.
+    const ShadowFitParams* shadowFit = nullptr;
 
     // Per-view targets.
     FBOHandle              fboMainMS;

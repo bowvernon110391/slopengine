@@ -5,9 +5,11 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "Camera.h"
 #include "renderer/RenderContext.h"
 #include "renderer/RenderTargetPool.h"
 #include "renderer/Renderer.h"
+#include "renderer/ShadowFit.h"
 #include "scene/Scene.h"
 
 namespace {
@@ -126,9 +128,17 @@ void FrameGraph::render(Renderer& renderer, Scene& scene)
         shadowCtx.fboShadow.push_back(renderer.pool().acquire(desc));
     }
 
+    // The shadow map is frame-level and shared by every view, so the fit follows
+    // the first view's camera. Exact while there is a single view.
+    const Camera* fitCamera = m_views.empty() ? nullptr : &m_views.front().camera;
+    ShadowFitParams fit = renderer.shadowFit();
+    fit.mapSize = renderer.shadowMapSize();
+
     for (const Light& l : lights) {
         if (!l.castsShadow) continue;
-        shadowCtx.lightSpaceMatrices.push_back(directionalLightMatrix(l, scene.worldBounds()));
+        shadowCtx.lightSpaceMatrices.push_back(
+            fitCamera ? computeShadowMatrix(l, *fitCamera, scene.worldBounds(), fit)
+                      : directionalLightMatrix(l, scene.worldBounds()));
     }
 
     if (!shadowCtx.fboShadow.empty()) {
@@ -179,6 +189,7 @@ void FrameGraph::render(Renderer& renderer, Scene& scene)
         ctx.fboBloom     = view.resources.fboBloom;
         ctx.fullscreenVAO = renderer.fullscreenVAO();
         ctx.msaaSamples  = renderer.msaaSamples();
+        ctx.shadowFit    = &renderer.shadowFit();
 
         runPass(renderer.forwardPass(),   ctx, (view.passes & Pass_Forward)   != 0);
         // The debug overlay depth-tests against the MSAA target, so it has to

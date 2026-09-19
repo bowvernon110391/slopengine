@@ -356,16 +356,22 @@ std::vector<MaterialHandle> makeMaterialPalette(Renderer& renderer)
     return palette;
 }
 
-// Scatters props over a +/-30 unit field. Roughly three quarters are static, so
-// the frozen-transform and cached-bounds paths actually get exercised.
+// Scatters props over a disc centred on the origin. The radius is kept inside
+// the ground plane (makeGround() spans +/-16), so nothing floats over the edge
+// of the world. Roughly three quarters are static, so the frozen-transform and
+// cached-bounds paths actually get exercised.
 void spawnField(Scene& scene, const MeshCache& meshes,
                 const MeshHandle* shapes, int shapeCount,
                 const std::vector<MaterialHandle>& palette,
                 std::vector<Entity>& outDynamic)
 {
+    constexpr float kFieldRadius = 13.0f;   // < half the ground extent (16)
+    constexpr float kSnapStep    = 2.0f;    // static props sit on a coarse lattice
+
     std::mt19937 rng(1337u);   // fixed seed: reproducible layouts
-    std::uniform_real_distribution<float> positionDist(-30.0f, 30.0f);
-    std::uniform_real_distribution<float> heightDist(0.5f, 6.0f);
+    std::uniform_real_distribution<float> radiusDist(0.0f, 1.0f);
+    std::uniform_real_distribution<float> angleDist2(0.0f, 2.0f * PI);
+    std::uniform_real_distribution<float> heightDist(0.5f, 4.0f);
     std::uniform_real_distribution<float> scaleDist(0.5f, 1.6f);
     std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * PI);
     std::uniform_int_distribution<int>    shapeDist(0, shapeCount - 1);
@@ -375,11 +381,19 @@ void spawnField(Scene& scene, const MeshCache& meshes,
     for (int i = 0; i < kPropCount; ++i) {
         const bool isStatic = (i % 4) != 0;
 
-        glm::vec3 position(positionDist(rng), heightDist(rng), positionDist(rng));
+        // sqrt()-style remap of a uniform sample gives even area density over the
+        // disc; the exponent below it softens that into a slight centre bias so
+        // the field reads as a cluster rather than a uniform scatter.
+        const float u = radiusDist(rng);
+        const float rad = kFieldRadius * std::pow(u, 0.55f);
+        const float ang = angleDist2(rng);
+
+        glm::vec3 position(rad * std::cos(ang), heightDist(rng), rad * std::sin(ang));
         if (isStatic) {
-            // Snap so "static" really means unmoving.
-            position.x = std::floor(position.x);
-            position.z = std::floor(position.z);
+            // Snap so "static" really means unmoving, and so the props stay on a
+            // tidy lattice instead of overlapping once the field is dense.
+            position.x = std::round(position.x / kSnapStep) * kSnapStep;
+            position.z = std::round(position.z / kSnapStep) * kSnapStep;
         }
 
         Entity e = addMeshEntity(scene, meshes,
@@ -407,7 +421,7 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
 
-    Window window("SDL2 + OpenGL 3.3 Demo", 800, 600);
+    Window window("Slop Engine v0.1 alpha", 800, 600);
     if (!window.ok()) {
         SDL_Log("Failed to create window / OpenGL context.");
         return 1;
@@ -443,7 +457,7 @@ int main(int argc, char* argv[])
     }
 
     // --- GPU resources ----------------------------------------------------
-    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeGround(24, 1.0f, -0.5f))));
+    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeGround(32, 1.0f, -0.5f))));
     MeshHandle cubeMesh    = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCube())));
     MeshHandle sphereMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeSphere(24, 32, 1.0f, glm::vec3(0.25f, 0.55f, 0.90f)))));
     MeshHandle cylMesh     = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCylinder(32, 0.6f, 0.6f, glm::vec3(0.90f, 0.45f, 0.20f)))));
@@ -702,6 +716,20 @@ int main(int argc, char* argv[])
         const std::vector<ShadowMapView>& shadowViews = renderer.shadowMapViews();
         ImGui::Separator();
         ImGui::Text("Shadow maps: %d", static_cast<int>(shadowViews.size()));
+
+        // --- Shadow fit ----------------------------------------------------
+        // The ortho follows the camera, so these directly trade distant shadows
+        // for near-camera sharpness.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Shadow fit");
+        ShadowFitParams fit = renderer.shadowFit();
+        ImGui::SliderFloat("Distance", &fit.shadowDistance, 10.0f, 120.0f, "%.0f");
+        ImGui::SliderFloat("Fade fraction", &fit.fadeFraction, 0.0f, 0.5f, "%.2f");
+        ImGui::SliderFloat("Lateral padding", &fit.lateralPadding, 0.0f, 5.0f, "%.2f");
+        ImGui::SliderFloat("Max extrusion", &fit.maxExtrusion, 0.0f, 200.0f, "%.0f");
+        ImGui::Checkbox("Extrude for casters", &fit.extrudeForCasters);
+        ImGui::Checkbox("Texel snap", &fit.texelSnap);
+        renderer.setShadowFit(fit);
 
         if (shadowViews.empty()) {
             ImGui::TextUnformatted(shadowDebug

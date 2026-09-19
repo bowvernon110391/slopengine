@@ -55,6 +55,10 @@ uniform int       uShadowEnabled;
 uniform mat4      uLightSpaceMatrix;
 uniform sampler2D uShadowMap;
 
+// Shadow range, used to fade the shadow out before the fitted volume ends.
+uniform float     uShadowDistance;
+uniform float     uShadowFade;
+
 // Point lights (unshadowed).
 uniform int   uPointLightCount;
 uniform vec3  uPointPos[MAX_POINT_LIGHTS];

@@ -78,6 +78,7 @@ add_executable(sdl2_opengl_demo WIN32
     src/renderer/Renderer.cpp
     src/renderer/Frustum.cpp
     src/renderer/DebugDraw.cpp
+    src/renderer/ShadowFit.cpp
     src/renderer/passes/ShadowPass.cpp
     src/renderer/passes/ForwardPass.cpp
     src/renderer/passes/ResolvePass.cpp
