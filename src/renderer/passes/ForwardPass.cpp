@@ -53,6 +53,9 @@ void ForwardPass::execute(RenderContext& ctx)
     m_shader->setFloat("uShadowSlopeBiasScale", m_shadowSlopeBias);
     m_shader->setFloat("uShadowMaxBias", m_shadowMaxBias);
 
+    // Poisson-disc filter width, in shadow-map texels.
+    m_shader->setFloat("uShadowPcfRadius", m_pcfRadius);
+
     // --- Directional light (first one in the view) -----------------------
     const Light* dirLight = nullptr;
     for (const Light& l : ctx.view->lights) {

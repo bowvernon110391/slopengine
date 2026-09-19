@@ -66,6 +66,10 @@ uniform float     uShadowBias;
 uniform float     uShadowSlopeBiasScale;
 uniform float     uShadowMaxBias;
 
+// Poisson-disc filter radius, in shadow-map texels. A wider radius softens the
+// penumbra at a fixed 16 taps. Owned by ForwardPass, exposed in "Shadow Maps".
+uniform float     uShadowPcfRadius;
+
 // Point lights (unshadowed).
 uniform int   uPointLightCount;
 uniform vec3  uPointPos[MAX_POINT_LIGHTS];

@@ -9,6 +9,7 @@
 //               uShadowEnabled, uLightSpaceMatrix, uShadowMap,
 //               uShadowDistance, uShadowFade,
 //               uShadowBias, uShadowSlopeBiasScale, uShadowMaxBias,
+//               uShadowPcfRadius,
 //               uPointLightCount, uPointPos[], uPointColor[],
 //               uPointIntensity[], uPointRange[]
 //   macro:      MAX_POINT_LIGHTS
@@ -40,7 +41,55 @@ float slopeScaledBias(float ndl)
                uShadowMaxBias);
 }
 
-// 3x3 PCF shadow lookup against the directional light's depth map.
+// 16-point Poisson disc used to filter the shadow lookup.
+//
+// Maximin-optimised on a unit disc: the closest pair of taps is 0.449 apart,
+// against ~0.476 for ideal hex packing of 16 points, so the disc is within a few
+// percent of the best spacing achievable at this tap count. The centroid sits on
+// the origin and every radius is <= 1, so scaling by a radius R gives a footprint
+// that reaches R texels in every direction.
+//
+// Regenerate with the generator script rather than editing by hand -- an
+// unverified table tends to leave a hole, which shows up as a bright ring.
+const vec2 kPoissonDisc16[16] = vec2[16](
+    vec2(-0.79546, -0.32911),
+    vec2(-0.56759, -0.77051),
+    vec2( 0.42642,  0.27320),
+    vec2(-0.10305, -0.72944),
+    vec2(-0.01728,  0.40411),
+    vec2(-0.41297,  0.16755),
+    vec2(-0.13625,  0.93186),
+    vec2( 0.87282,  0.45587),
+    vec2(-0.31162, -0.26983),
+    vec2( 0.17817, -0.21919),
+    vec2( 0.69216, -0.15067),
+    vec2( 0.50373,  0.82407),
+    vec2(-0.53221,  0.68216),
+    vec2( 0.78067, -0.62495),
+    vec2(-0.89206,  0.25323),
+    vec2( 0.31453, -0.89836));
+
+// Rotate 'v' by 'angle' radians, used to decorrelate the tap pattern per pixel.
+vec2 rotate2(vec2 v, float angle)
+{
+    float s = sin(angle);
+    float c = cos(angle);
+    return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+// Interleaved gradient noise (Jimenez), returning [0, 1). Cheaper than a bit hash
+// and better distributed than a single fract() of the pixel coordinates.
+float interleavedGradientNoise(vec2 pixel)
+{
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// Poisson-disc shadow lookup against the directional light's depth map.
+//
+// 16 taps on a disc, scaled by uShadowPcfRadius and rotated per pixel. A wider
+// radius softens the penumbra at a fixed 16 fetches; the rotation is what keeps
+// that tap count from reading as structured banding, because it decorrelates the
+// pattern from the shadow map's texel grid instead of leaving it aligned to it.
 float sampleShadow(vec3 worldPos, vec3 N, vec3 L)
 {
     vec4 lightSpace = uLightSpaceMatrix * vec4(worldPos, 1.0);
@@ -51,15 +100,19 @@ float sampleShadow(vec3 worldPos, vec3 N, vec3 L)
 
     float bias = slopeScaledBias(dot(N, L));
     vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    vec2 stepSize = texel * uShadowPcfRadius;
+
+    // A fixed disc orientation would show its own structure at 16 taps; a
+    // per-pixel angle turns that into fine noise instead.
+    float angle = interleavedGradientNoise(gl_FragCoord.xy) * 6.28318530718;
 
     float visible = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            float depth = texture(uShadowMap, proj.xy + vec2(x, y) * texel).r;
-            visible += (proj.z - bias > depth) ? 0.0 : 1.0;
-        }
+    for (int i = 0; i < 16; ++i) {
+        vec2 offset = rotate2(kPoissonDisc16[i], angle) * stepSize;
+        float depth = texture(uShadowMap, proj.xy + offset).r;
+        visible += (proj.z - bias > depth) ? 0.0 : 1.0;
     }
-    return visible / 9.0;
+    return visible / 16.0;
 }
 
 vec3 computeLighting(vec3 normal, vec3 baseColor, vec3 worldPos, vec3 cameraPos)

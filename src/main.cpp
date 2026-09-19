@@ -785,6 +785,18 @@ int main(int argc, char* argv[])
         ImGui::Checkbox("Texel snap", &fit.texelSnap);
         renderer.setShadowFit(fit);
 
+        // --- Shadow filtering ----------------------------------------------
+        // The width of the Poisson disc the shadow lookup samples with. Separate
+        // from the fit above: this filters the sampled result, it does not change
+        // how the light's ortho is fitted. Widening it softens the penumbra at a
+        // fixed 16 taps, but more lit taps get averaged in near a contact, so a
+        // radius that is too large shrinks the shadow there.
+        ImGui::Separator();
+        float pcfRadius = renderer.forwardPass().pcfRadius();
+        if (ImGui::SliderFloat("Poisson radius (texels)", &pcfRadius, 0.5f, 6.0f, "%.2f")) {
+            renderer.forwardPass().setPcfRadius(pcfRadius);
+        }
+
         if (shadowViews.empty()) {
             ImGui::TextUnformatted(shadowDebug
                 ? "None (no light casts a shadow)"

@@ -42,14 +42,21 @@ public:
         m_shadowMaxBias    = kDefaultShadowMaxBias;
     }
 
+    // Poisson-disc shadow filter radius, in shadow-map texels. Widening it softens
+    // the penumbra without costing extra fetches, so it is the cheap quality knob.
+    float pcfRadius() const { return m_pcfRadius; }
+    void  setPcfRadius(float r) { m_pcfRadius = r; }
+
 private:
     static constexpr float kDefaultShadowBias      = 0.0f;
     static constexpr float kDefaultShadowSlopeBias = 0.35f;
     static constexpr float kDefaultShadowMaxBias   = 0.02f;
+    static constexpr float kDefaultPcfRadius       = 2.0f;
 
     Shader* m_shader = nullptr;
 
     float m_shadowBias      = kDefaultShadowBias;
     float m_shadowSlopeBias = kDefaultShadowSlopeBias;
     float m_shadowMaxBias   = kDefaultShadowMaxBias;
+    float m_pcfRadius       = kDefaultPcfRadius;
 };
