@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <memory>
@@ -24,6 +25,11 @@
 namespace {
 
 constexpr float PI = 3.14159265358979323846f;
+
+// Ground plane height. Shared by makeGround() and prop placement so the two
+// cannot drift apart -- seating props against a stale ground height would leave
+// the whole grounded tier floating or half-buried.
+constexpr float kGroundY = -0.5f;
 
 // True while the fly-camera owns the mouse (toggled with F1). This lives at
 // namespace scope because Window::setEventHook() takes a plain function
@@ -356,51 +362,123 @@ std::vector<MaterialHandle> makeMaterialPalette(Renderer& renderer)
     return palette;
 }
 
-// Scatters props over a disc centred on the origin. The radius is kept inside
-// the ground plane (makeGround() spans +/-16), so nothing floats over the edge
-// of the world. Roughly three quarters are static, so the frozen-transform and
-// cached-bounds paths actually get exercised.
+// An already-placed prop, used to keep later props from intersecting it.
+//
+// Each prop is bounded by a vertical cylinder: a circumscribed XZ radius plus a
+// vertical half-extent. Two such cylinders are disjoint when they are separated
+// along XZ *or* along Y, which is the test applied below.
+//
+// The XZ radius is the circumscribed one rather than the tight one. That is the
+// honest bound for the dynamic props: they spin about Y, so they sweep their whole
+// circumscribed circle.
+struct Placement
+{
+    glm::vec2 xz;
+    float     radius;   // circumscribed XZ radius
+    float     y;        // centre, world space
+    float     yHalf;    // half-extent along Y
+};
+
+// Scatters props over a disc centred on the origin. The radius is kept inside the
+// ground plane (makeGround() spans +/-16), so nothing hangs over the edge of the
+// world.
+//
+// Roughly half the props are seated on the ground and half float well above it, so
+// the high ones throw shadows onto the ground and onto whatever sits beneath them.
+// Roughly three quarters are static, which is what exercises the frozen-transform
+// and cached-bounds paths.
 void spawnField(Scene& scene, const MeshCache& meshes,
                 const MeshHandle* shapes, int shapeCount,
                 const std::vector<MaterialHandle>& palette,
                 std::vector<Entity>& outDynamic)
 {
     constexpr float kFieldRadius = 13.0f;   // < half the ground extent (16)
-    constexpr float kSnapStep    = 2.0f;    // static props sit on a coarse lattice
+    constexpr float kFloatYMin   = 3.0f;
+    constexpr float kFloatYMax   = 14.0f;
+    constexpr int   kPropCount   = 64;
+    constexpr int   kPlaceTries  = 32;      // rejection attempts per prop
+    constexpr float kPadding     = 1.15f;   // slack on each required clearance
 
     std::mt19937 rng(1337u);   // fixed seed: reproducible layouts
-    std::uniform_real_distribution<float> radiusDist(0.0f, 1.0f);
-    std::uniform_real_distribution<float> angleDist2(0.0f, 2.0f * PI);
-    std::uniform_real_distribution<float> heightDist(0.5f, 4.0f);
-    std::uniform_real_distribution<float> scaleDist(0.5f, 1.6f);
+    std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
     std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * PI);
+    std::uniform_real_distribution<float> floatHeightDist(kFloatYMin, kFloatYMax);
+    std::uniform_real_distribution<float> scaleDist(0.5f, 1.6f);
     std::uniform_int_distribution<int>    shapeDist(0, shapeCount - 1);
     std::uniform_int_distribution<int>    materialDist(0, static_cast<int>(palette.size()) - 1);
 
-    const int kPropCount = 64;
+    std::vector<Placement> placed;
+    placed.reserve(kPropCount);
+
     for (int i = 0; i < kPropCount; ++i) {
-        const bool isStatic = (i % 4) != 0;
+        // Grounded / static are drawn independently rather than derived from the
+        // loop index: branching on i % 2 and i % 4 would correlate the two, so
+        // "grounded" would imply "more likely static" and the two populations
+        // would stop looking independent.
+        const bool grounded = unitDist(rng) < 0.5f;
+        const bool isStatic = unitDist(rng) < 0.75f;
 
-        // sqrt()-style remap of a uniform sample gives even area density over the
-        // disc; the exponent below it softens that into a slight centre bias so
-        // the field reads as a cluster rather than a uniform scatter.
-        const float u = radiusDist(rng);
-        const float rad = kFieldRadius * std::pow(u, 0.55f);
-        const float ang = angleDist2(rng);
+        const MeshHandle shape = shapes[shapeDist(rng)];
+        const Mesh* mesh = meshes.get(shape);
 
-        glm::vec3 position(rad * std::cos(ang), heightDist(rng), rad * std::sin(ang));
-        if (isStatic) {
-            // Snap so "static" really means unmoving, and so the props stay on a
-            // tidy lattice instead of overlapping once the field is dense.
-            position.x = std::round(position.x / kSnapStep) * kSnapStep;
-            position.z = std::round(position.z / kSnapStep) * kSnapStep;
+        // Local bounds, so a prop can be seated on the ground without hardcoding
+        // a half-height per shape.
+        glm::vec3 half(0.5f);
+        glm::vec3 localMin(-0.5f);
+        if (mesh) {
+            const AABB& b = mesh->bounds();
+            half     = b.extents();
+            localMin = b.min;
         }
 
-        Entity e = addMeshEntity(scene, meshes,
-                                 shapes[shapeDist(rng)],
+        const float s     = scaleDist(rng);
+        const float foot  = glm::length(glm::vec2(half.x, half.z)) * s;
+        const float yHalf = half.y * s;
+
+        // The verticality: either seated on the plane, or floating far enough above
+        // it that the prop shades whatever ends up underneath it. Seating derives
+        // from the mesh's own min.y rather than a fixed offset, so it stays correct
+        // for a mesh that is not centred on its origin.
+        const float y = grounded ? (kGroundY - localMin.y * s)   // base on the plane
+                                 : floatHeightDist(rng);          // floating centre
+
+        // Rejection sampling against everything already placed. This replaces a
+        // lattice snap that was actively harmful: rounding positions to a 2-unit
+        // grid dropped several props onto the same cell, and those coincident pairs
+        // are what used to intersect.
+        glm::vec2 bestXZ(0.0f);
+        float bestClear = -1e9f;
+        for (int attempt = 0; attempt < kPlaceTries; ++attempt) {
+            // sqrt()-style remap of a uniform sample gives even area density over
+            // the disc; the exponent softens that into a slight centre bias so the
+            // field reads as a cluster rather than a uniform scatter.
+            const float rad = kFieldRadius * std::pow(unitDist(rng), 0.55f);
+            const float ang = angleDist(rng);
+            const glm::vec2 xz(rad * std::cos(ang), rad * std::sin(ang));
+
+            float clear = 1e9f;
+            for (const Placement& p : placed) {
+                // Two vertical cylinders intersect only if they overlap on BOTH
+                // axes, so taking the larger of the two margins expresses exactly
+                // "disjoint in XZ, or disjoint in Y". Requiring XZ clearance alone
+                // would forbid floating a prop above a grounded one, which is the
+                // entire point of the height split.
+                const float dxz = glm::length(xz - p.xz) - (foot + p.radius) * kPadding;
+                const float dy  = std::abs(y - p.y) - (yHalf + p.yHalf);
+                clear = std::min(clear, std::max(dxz, dy));
+            }
+            if (clear >= 0.0f) { bestXZ = xz; break; }
+
+            // Nothing fits: keep the roomiest candidate seen, so the prop count
+            // stays exact and the loop always terminates.
+            if (clear > bestClear) { bestClear = clear; bestXZ = xz; }
+        }
+        placed.push_back(Placement{ bestXZ, foot, y, yHalf });
+
+        Entity e = addMeshEntity(scene, meshes, shape,
                                  palette[materialDist(rng)],
-                                 position,
-                                 glm::vec3(scaleDist(rng)),
+                                 glm::vec3(bestXZ.x, y, bestXZ.y),
+                                 glm::vec3(s),
                                  isStatic);
 
         if (!isStatic) {
@@ -457,7 +535,7 @@ int main(int argc, char* argv[])
     }
 
     // --- GPU resources ----------------------------------------------------
-    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeGround(32, 1.0f, -0.5f))));
+    MeshHandle groundMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeGround(32, 1.0f, kGroundY))));
     MeshHandle cubeMesh    = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCube())));
     MeshHandle sphereMesh  = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeSphere(24, 32, 1.0f, glm::vec3(0.25f, 0.55f, 0.90f)))));
     MeshHandle cylMesh     = renderer.meshes().add(std::unique_ptr<Mesh>(new Mesh(makeCylinder(32, 0.6f, 0.6f, glm::vec3(0.90f, 0.45f, 0.20f)))));
@@ -468,12 +546,7 @@ int main(int argc, char* argv[])
     groundMat.specPower    = 16.0f;
     groundMat.specStrength = 0.05f;
 
-    Material shapeMat;
-    shapeMat.specPower    = 48.0f;
-    shapeMat.specStrength = 0.40f;
-
     MaterialHandle groundMaterial = renderer.materials().add(groundMat);
-    MaterialHandle shapeMaterial  = renderer.materials().add(shapeMat);
 
     // --- Scene ------------------------------------------------------------
     World world;
@@ -482,22 +555,12 @@ int main(int argc, char* argv[])
     addMeshEntity(scene, renderer.meshes(), groundMesh, groundMaterial,
                   glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f), true);
 
-    const glm::vec3 shapePositions[5] = {
-        glm::vec3(-4.0f, 1.0f, -2.0f),
-        glm::vec3(-2.0f, 1.0f, -2.0f),
-        glm::vec3( 0.0f, 1.0f, -2.0f),
-        glm::vec3( 2.0f, 1.0f, -2.0f),
-        glm::vec3( 4.0f, 1.0f, -2.0f),
-    };
-    const MeshHandle shapeMeshes[5] = { cubeMesh, sphereMesh, cylMesh, coneMesh, torusMesh };
-    Entity shapeEntities[5];
-    for (int i = 0; i < 5; ++i) {
-        shapeEntities[i] = addMeshEntity(scene, renderer.meshes(), shapeMeshes[i],
-                                         shapeMaterial, shapePositions[i],
-                                         glm::vec3(1.0f));
-    }
-
     // --- Random prop field ------------------------------------------------
+    // The ground is the only object placed by hand. Everything else comes from the
+    // field below, so all five shape meshes reach the scene through the spawner and
+    // the scene is laid out entirely at random.
+    const MeshHandle shapeMeshes[5] = { cubeMesh, sphereMesh, cylMesh, coneMesh, torusMesh };
+
     // A wider spread of objects sharing a small material palette: this is what
     // exercises frustum culling, the static/dynamic split and material batching.
     const std::vector<MaterialHandle> palette = makeMaterialPalette(renderer);
@@ -620,15 +683,6 @@ int main(int argc, char* argv[])
         if (g_cursorCaptured && (mdx != 0.0f || mdy != 0.0f)) camera.processMouse(mdx, mdy);
 
         // --- Animate the scene --------------------------------------------
-        for (int i = 0; i < 5; ++i) {
-            Transform* t = scene.transforms().get(shapeEntities[i]);
-            if (!t) continue;
-            const float spin = elapsed * (0.5f + 0.2f * i);
-            const glm::quat yaw   = glm::quat(glm::vec3(0.0f, spin, 0.0f));
-            const glm::quat tilt  = glm::quat(glm::vec3(std::sin(elapsed + i) * 0.5f, 0.0f, 0.0f));
-            t->rotation = yaw * tilt;
-        }
-
         // Only the dynamic props move; the static ones are frozen, which is what
         // lets updateTransforms() skip their whole subtree.
         for (std::size_t i = 0; i < dynamicProps.size(); ++i) {
@@ -641,7 +695,7 @@ int main(int argc, char* argv[])
             t->rotation = yaw * tilt;
         }
 
-        // The two point lights orbit the shape gallery (dynamic lights).
+        // The two point lights orbit the centre of the field (dynamic lights).
         {
             Transform* ta = scene.transforms().get(lightAEntity);
             if (ta) {
@@ -748,6 +802,39 @@ int main(int argc, char* argv[])
             }
             ImGui::PopID();
         }
+        ImGui::End();
+
+        // --- Shadow bias ----------------------------------------------------
+        // The depth bias the shadow lookup compares with, in its own window: it is
+        // the remaining lever now that polygon offset is off, and these three terms
+        // trade directly against each other (see slopeScaledBias() in
+        // shaders/common/lighting.glsl).
+        ImGui::SetNextWindowPos(ImVec2(430, 430), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Shadow Bias");
+
+        float bias      = renderer.forwardPass().shadowBias();
+        float slopeBias = renderer.forwardPass().shadowSlopeBias();
+        float maxBias   = renderer.forwardPass().shadowMaxBias();
+
+        // Five decimals for the two absolute biases: they are of order 1e-3, so a
+        // coarser format would show every value as "0.00" and be useless.
+        ImGui::SliderFloat("Base bias", &bias, 0.0f, 0.010f, "%.5f");
+        ImGui::SliderFloat("Slope scale", &slopeBias, 0.0f, 2.0f, "%.3f");
+        ImGui::SliderFloat("Max bias", &maxBias, 0.0f, 0.050f, "%.5f");
+
+        renderer.forwardPass().setShadowBias(bias);
+        renderer.forwardPass().setShadowSlopeBias(slopeBias);
+        renderer.forwardPass().setShadowMaxBias(maxBias);
+
+        if (ImGui::Button("Reset")) {
+            renderer.forwardPass().resetShadowBias();
+        }
+
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Lower bias keeps shadows attached to the object casting them but lets "
+            "acne through; higher bias does the reverse. Polygon offset is disabled, "
+            "so these are the only guard against acne.");
         ImGui::End();
 
         ImGui::SetNextWindowPos(ImVec2(10, 110), ImGuiCond_FirstUseEver);

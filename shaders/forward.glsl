@@ -59,6 +59,13 @@ uniform sampler2D uShadowMap;
 uniform float     uShadowDistance;
 uniform float     uShadowFade;
 
+// Depth-bias terms for the shadow comparison. Owned by ForwardPass and exposed in
+// the "Shadow Bias" panel, because they trade shadow acne against shadows
+// detaching from the objects that cast them.
+uniform float     uShadowBias;
+uniform float     uShadowSlopeBiasScale;
+uniform float     uShadowMaxBias;
+
 // Point lights (unshadowed).
 uniform int   uPointLightCount;
 uniform vec3  uPointPos[MAX_POINT_LIGHTS];

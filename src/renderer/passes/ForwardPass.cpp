@@ -48,6 +48,11 @@ void ForwardPass::execute(RenderContext& ctx)
     m_shader->setFloat("uShadowDistance", shadowDistance);
     m_shader->setFloat("uShadowFade", shadowFade);
 
+    // Depth-bias terms, tunable from the "Shadow Bias" panel.
+    m_shader->setFloat("uShadowBias", m_shadowBias);
+    m_shader->setFloat("uShadowSlopeBiasScale", m_shadowSlopeBias);
+    m_shader->setFloat("uShadowMaxBias", m_shadowMaxBias);
+
     // --- Directional light (first one in the view) -----------------------
     const Light* dirLight = nullptr;
     for (const Light& l : ctx.view->lights) {

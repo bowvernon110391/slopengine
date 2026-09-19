@@ -33,8 +33,8 @@ void ShadowPass::execute(RenderContext& ctx)
         gl::Enable(gl::CULL_FACE);
         gl::CullFace(gl::FRONT);          // reduce shadow acne / peter-panning
         gl::FrontFace(gl::CCW);
-        gl::Enable(gl::POLYGON_OFFSET_FILL);
-        gl::PolygonOffset(2.0f, 4.0f);
+        // gl::Enable(gl::POLYGON_OFFSET_FILL);
+        // gl::PolygonOffset(2.0f, 4.0f);
         gl::Clear(gl::DEPTH_BUFFER_BIT);
 
         m_shader->use();
@@ -52,8 +52,8 @@ void ShadowPass::execute(RenderContext& ctx)
             item.mesh->draw();
         }
 
-        gl::Disable(gl::POLYGON_OFFSET_FILL);
-        gl::PolygonOffset(0.0f, 0.0f);
+        // gl::Disable(gl::POLYGON_OFFSET_FILL);
+        // gl::PolygonOffset(0.0f, 0.0f);
         gl::CullFace(gl::BACK);
         ++index;
     }

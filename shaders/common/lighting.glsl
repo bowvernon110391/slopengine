@@ -8,6 +8,7 @@
 //               uDirLightEnabled, uDirLightDir, uDirLightColor,
 //               uShadowEnabled, uLightSpaceMatrix, uShadowMap,
 //               uShadowDistance, uShadowFade,
+//               uShadowBias, uShadowSlopeBiasScale, uShadowMaxBias,
 //               uPointLightCount, uPointPos[], uPointColor[],
 //               uPointIntensity[], uPointRange[]
 //   macro:      MAX_POINT_LIGHTS
@@ -16,19 +17,27 @@
 //
 // The depth error of a shadow lookup grows with the surface's slope relative to
 // the light, proportional to tan(theta). A constant bias therefore either leaks
-// light on steep surfaces or detaches shadows on flat ones. kSlopeBiasScale
-// widens the bias as the surface turns away; kMaxShadowBias caps it so a nearly
+// light on steep surfaces or detaches shadows on flat ones. uShadowSlopeBiasScale
+// widens the bias as the surface turns away; uShadowMaxBias caps it so a nearly
 // edge-on surface cannot bias itself out of range and lose its shadow entirely.
-const float kShadowBias     = 0.0015;
-const float kSlopeBiasScale = 0.35;
-const float kMaxShadowBias  = 0.02;
+//
+// These trade directly against each other, which is why they are tunable at
+// runtime rather than fixed: a smaller bias keeps a shadow attached to the object
+// casting it but lets acne through, and a larger bias does the reverse. On the
+// flat ground the value used is uShadowBias * (1 + uShadowSlopeBiasScale * tan),
+// clamped to uShadowMaxBias.
+//
+// Declared by the including stage, like the other uniforms in the list above --
+// declaring them here as well would be a duplicate declaration in any stage that
+// includes this file, which fails to compile.
 
 // tan(acos(ndl)) computed without the trig: sqrt(1 - c^2) / c.
 float slopeScaledBias(float ndl)
 {
     float c = clamp(ndl, 1e-4, 1.0);
     float tanTheta = sqrt(1.0 - c * c) / c;
-    return min(kShadowBias * (1.0 + kSlopeBiasScale * tanTheta), kMaxShadowBias);
+    return min(uShadowBias * (1.0 + uShadowSlopeBiasScale * tanTheta),
+               uShadowMaxBias);
 }
 
 // 3x3 PCF shadow lookup against the directional light's depth map.
