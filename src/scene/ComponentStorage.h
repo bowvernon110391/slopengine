@@ -80,3 +80,10 @@ private:
     std::vector<Entity>        m_entities;  // owner of each dense slot
     std::vector<std::uint32_t> m_sparse;    // entity id -> dense index
 };
+
+// Out-of-line definition for the static constexpr member. Under C++11/14 an
+// ODR-use (e.g. binding INVALID to the `const T&` parameter of
+// std::vector::resize) requires a definition with storage. MSVC accepts the
+// in-class declaration alone, but GCC/Clang do not, so provide it explicitly.
+template <typename T>
+constexpr std::uint32_t ComponentStorage<T>::INVALID;
