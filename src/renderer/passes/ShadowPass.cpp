@@ -31,10 +31,16 @@ void ShadowPass::execute(RenderContext& ctx)
         gl::DepthFunc(gl::LEQUAL);
         gl::DepthMask(1);
         gl::Enable(gl::CULL_FACE);
-        gl::CullFace(gl::FRONT);          // reduce shadow acne / peter-panning
+        // Culling the front faces stores the far surface, which is what keeps
+        // acne away -- but it also pushes the stored depth away from the light
+        // by the caster's thickness, causing the lit gap at a contact point that
+        // the negative offset below pulls back in.
+        gl::CullFace(gl::FRONT);
         gl::FrontFace(gl::CCW);
-        // gl::Enable(gl::POLYGON_OFFSET_FILL);
-        // gl::PolygonOffset(2.0f, 4.0f);
+        // glPolygonOffset does not affect glClear, so this order is only for
+        // readability: the offset applies to the draws below, not the clear.
+        gl::Enable(gl::POLYGON_OFFSET_FILL);
+        gl::PolygonOffset(m_offsetFactor, m_offsetUnits);
         gl::Clear(gl::DEPTH_BUFFER_BIT);
 
         m_shader->use();
@@ -52,9 +58,10 @@ void ShadowPass::execute(RenderContext& ctx)
             item.mesh->draw();
         }
 
-        // gl::Disable(gl::POLYGON_OFFSET_FILL);
-        // gl::PolygonOffset(0.0f, 0.0f);
+        // Must be turned off here: leaving polygon offset enabled would leak the
+        // offset into the main pass's depth writes and z-fight the lit scene.
         gl::CullFace(gl::BACK);
+        gl::Disable(gl::POLYGON_OFFSET_FILL);
         ++index;
     }
 

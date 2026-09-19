@@ -3,17 +3,22 @@
 #include <glm/glm.hpp>
 
 #include "Camera.h"
-#include "core/Types.h"
 #include "scene/Components.h"
 
 // Parameters controlling how the directional light's orthographic projection is
 // fitted to the camera.
 //
-// The fit concentrates shadow-map texels on what the camera can actually see,
-// which trades distant shadow quality for near-camera sharpness. shadowDistance
-// is therefore the primary quality knob rather than a mere safety clamp: without
-// it, looking at the horizon sends the far frustum corners to the camera's far
-// plane and the fit collapses into a blurry mess.
+// The fit uses the bounding sphere of the camera's frustum slice, clamped to
+// shadowDistance. A sphere's light-space extent does not change as the camera
+// rotates, so the shadow map's texel size stays fixed and texel snapping can
+// hold the grid still; fitting the slice tightly instead makes the span vary
+// with orientation, and shadow edges then crawl. The price is that a sphere
+// circumscribes the slice, so it covers somewhat more area than a tight fit.
+//
+// shadowDistance is therefore the primary quality knob rather than a mere safety
+// clamp: without it, looking at the horizon sends the far slice corner to the
+// camera's far plane and the fixed-radius sphere spreads those texels very
+// thinly.
 struct ShadowFitParams
 {
     // Shadow map resolution, used for texel snapping. Kept in sync with
@@ -28,23 +33,19 @@ struct ShadowFitParams
     // boundary is a soft gradient rather than a hard line on the ground.
     float fadeFraction = 0.15f;
 
-    // Extra world units added on each side of the light-space X/Y extents.
-    // Extrusion along the light axis cannot capture a caster that sits
-    // laterally outside the camera frustum; padding is what recovers those.
-    float lateralPadding = 0.0f;
-
-    // Upper bound on how far the volume is extended along the light direction to
-    // capture off-screen casters. Extruding widens the near/far span, which costs
-    // depth precision (shadow acne), so it is capped rather than unbounded.
+    // How far the volume is extended along the light direction to capture
+    // casters outside the camera frustum. A constant, independent of the camera,
+    // so that the depth range does not shift as the camera moves; extruding
+    // widens that range, which costs depth precision (shadow acne).
     float maxExtrusion = 100.0f;
 
     // Extend the volume toward the light so casters outside the camera frustum
     // still cast shadows into view.
     bool extrudeForCasters = true;
 
-    // Quantise the fitted volume to the shadow map's texel grid. Without this the
-    // ortho slides in sub-texel increments as the camera moves, making shadow
-    // edges crawl and shimmer.
+    // Quantise the sphere's centre to the shadow map's texel grid. The fit's
+    // texel size is constant, so this holds the grid fixed relative to the world
+    // and stops shadow edges from shimmering as the camera moves.
     bool texelSnap = true;
 };
 
@@ -52,12 +53,8 @@ struct ShadowFitParams
 // inverse(viewProj) into 'out', ordered by (z, y, x) bit pattern.
 void frustumCornersWorld(const glm::mat4& inverseViewProj, glm::vec3 out[8]);
 
-// Builds the light-space matrix for a directional light, fitted to the camera's
-// (clamped) view frustum rather than the whole scene.
-//
-// 'sceneBounds' is only used to work out how far toward the light to extrude in
-// order to capture off-screen casters.
+// Builds the light-space matrix for a directional light, fitted to the bounding
+// sphere of the camera's (clamped) frustum slice rather than the whole scene.
 glm::mat4 computeShadowMatrix(const Light& light,
                               const Camera& camera,
-                              const AABB& sceneBounds,
                               const ShadowFitParams& params);

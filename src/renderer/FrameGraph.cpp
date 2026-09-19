@@ -137,7 +137,7 @@ void FrameGraph::render(Renderer& renderer, Scene& scene)
     for (const Light& l : lights) {
         if (!l.castsShadow) continue;
         shadowCtx.lightSpaceMatrices.push_back(
-            fitCamera ? computeShadowMatrix(l, *fitCamera, scene.worldBounds(), fit)
+            fitCamera ? computeShadowMatrix(l, *fitCamera, fit)
                       : directionalLightMatrix(l, scene.worldBounds()));
     }
 

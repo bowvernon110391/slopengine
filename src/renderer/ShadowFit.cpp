@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -15,8 +14,8 @@ glm::vec3 lightUp(const glm::vec3& dir)
                                       : glm::vec3(0.0f, 1.0f, 0.0f);
 }
 
-// Largest distance from 'center' to any of the given points. Used to place the
-// light's eye far enough back that every point lands in front of it.
+// Largest distance from 'center' to any of the given points: the radius of the
+// bounding sphere of 'points' about 'center'.
 float maxDistanceFrom(const glm::vec3& center, const glm::vec3* points, int count)
 {
     float best = 0.0f;
@@ -24,11 +23,6 @@ float maxDistanceFrom(const glm::vec3& center, const glm::vec3* points, int coun
         best = std::max(best, glm::length(points[i] - center));
     }
     return best;
-}
-
-glm::vec3 aabbCenter(const AABB& box)
-{
-    return box.valid() ? box.center() : glm::vec3(0.0f);
 }
 
 } // namespace
@@ -54,7 +48,6 @@ void frustumCornersWorld(const glm::mat4& inverseViewProj, glm::vec3 out[8])
 
 glm::mat4 computeShadowMatrix(const Light& light,
                               const Camera& camera,
-                              const AABB& sceneBounds,
                               const ShadowFitParams& params)
 {
     glm::vec3 dir = light.direction;
@@ -73,100 +66,71 @@ glm::mat4 computeShadowMatrix(const Light& light,
     glm::vec3 corners[8];
     frustumCornersWorld(invViewProj, corners);
 
-    // Scene bounds corners, for working out how far the light reaches past the
-    // visible region.
-    glm::vec3 sceneCorners[8];
-    const bool haveSceneBounds = sceneBounds.valid();
-    if (haveSceneBounds) {
-        for (int i = 0; i < 8; ++i) {
-            sceneCorners[i] = glm::vec3((i & 1) ? sceneBounds.max.x : sceneBounds.min.x,
-                                        (i & 2) ? sceneBounds.max.y : sceneBounds.min.y,
-                                        (i & 4) ? sceneBounds.max.z : sceneBounds.min.z);
-        }
-    }
-
-    // --- Light view -------------------------------------------------------
-    // Looking along the light direction, so moving a point along that direction
-    // changes only its light-space Z. Extruding later therefore costs no lateral
-    // texel density.
+    // --- Bounding sphere of the frustum slice -----------------------------
+    // The slice is symmetric about its centre, so the centroid of its eight
+    // corners is the centre of the bounding sphere and the distance to the
+    // farthest corner is its radius. That radius depends only on
+    // fov/aspect/near/far -- not on where the camera is or which way it faces:
+    //   r = sqrt(((zFar - zNear) / 2)^2 + halfWidth^2 + halfHeight^2)
+    //
+    // A constant radius gives a constant light-space span, and therefore a
+    // constant texel size, which is the precondition texel snapping needs in
+    // order to hold the grid still. Fitting the slice tightly instead makes the
+    // span vary with camera orientation, so a snap onto that span re-quantises
+    // onto a fresh grid every frame and shadow edges crawl.
     glm::vec3 center(0.0f);
     for (const glm::vec3& c : corners) center += c;
     center /= 8.0f;
 
-    // Place the eye far enough back that every point is in front of it.
-    float far = maxDistanceFrom(center, corners, 8);
-    if (haveSceneBounds) {
-        far = std::max(far, maxDistanceFrom(center, sceneCorners, 8));
-    }
-    const float eyeDistance = far + 1.0f;
+    float radius = maxDistanceFrom(center, corners, 8);
+    if (!(radius > 0.0f)) radius = 1.0f;   // degenerate slice (zero fov, etc.)
 
-    const glm::mat4 lightView =
-        glm::lookAt(center - dir * eyeDistance, center, lightUp(dir));
+    // --- Depth range ------------------------------------------------------
+    // Extrusion only ever extends the range on the lightward side. It is a
+    // constant rather than something derived from the scene bounds: deriving it
+    // made near/far depend on the camera's position, so the range shifted every
+    // frame and stored depths slid against a fixed bias, which read as acne
+    // flicker while moving.
+    const float extrusion = params.extrudeForCasters
+                          ? std::max(params.maxExtrusion, 0.0f)
+                          : 0.0f;
+    const float halfDepth   = radius + extrusion;
+    const float eyeDistance = halfDepth + 1.0f;
 
-    // --- Extents in light space -------------------------------------------
-    const float inf = std::numeric_limits<float>::max();
-    float minX = inf, maxX = -inf;
-    float minY = inf, maxY = -inf;
-    float cMinZ = inf, cMaxZ = -inf;
+    // --- Rotation-only light basis ----------------------------------------
+    // The grid axes must not rotate with the camera, so the basis is built about
+    // the origin and the sphere's centre is snapped within it. Snapping inside
+    // the final translated light view would let the axes' origin drift.
+    const glm::mat4 lightRot = glm::lookAt(glm::vec3(0.0f), dir, lightUp(dir));
 
-    for (const glm::vec3& c : corners) {
-        const glm::vec3 ls = glm::vec3(lightView * glm::vec4(c, 1.0f));
-        minX = std::min(minX, ls.x);
-        maxX = std::max(maxX, ls.x);
-        minY = std::min(minY, ls.y);
-        maxY = std::max(maxY, ls.y);
-        cMinZ = std::min(cMinZ, ls.z);
-        cMaxZ = std::max(cMaxZ, ls.z);
-    }
-
-    float zMax = cMaxZ;
-
-    // --- Extrusion toward the light (off-screen casters) -------------------
-    // Light-space Z grows toward the light, so a caster that can shadow the
-    // visible region sits at a larger Z than the frustum does. Extending zMax
-    // toward the scene's most lightward point pulls those casters into the
-    // volume.
-    if (params.extrudeForCasters && haveSceneBounds) {
-        float sMaxZ = -inf;
-        for (const glm::vec3& c : sceneCorners) {
-            const glm::vec3 ls = glm::vec3(lightView * glm::vec4(c, 1.0f));
-            sMaxZ = std::max(sMaxZ, ls.z);
-        }
-        const float extrusion = std::min(std::max(sMaxZ - cMaxZ, 0.0f),
-                                         std::max(params.maxExtrusion, 0.0f));
-        zMax += extrusion;
-    }
-
-    const float zMin = cMinZ;
-
-    // --- Lateral padding --------------------------------------------------
-    if (params.lateralPadding > 0.0f) {
-        minX -= params.lateralPadding;
-        maxX += params.lateralPadding;
-        minY -= params.lateralPadding;
-        maxY += params.lateralPadding;
-    }
+    glm::vec3 lsCenter = glm::vec3(lightRot * glm::vec4(center, 1.0f));
 
     // --- Texel snapping ---------------------------------------------------
-    // Keep the span, but shift the origin onto whole texels so the grid stays
-    // fixed relative to the world as the camera moves.
+    // A square box gives square texels, so the snap is isotropic and the shader's
+    // Poisson disc is not stretched. Snapping the centre (rather than a corner)
+    // keeps the box centred on the sphere.
     if (params.texelSnap && params.mapSize > 0) {
-        const float spanX = maxX - minX;
-        const float spanY = maxY - minY;
-        const float texelX = spanX / static_cast<float>(params.mapSize);
-        const float texelY = spanY / static_cast<float>(params.mapSize);
-        if (texelX > 0.0f) minX = std::floor(minX / texelX) * texelX;
-        if (texelY > 0.0f) minY = std::floor(minY / texelY) * texelY;
-        maxX = minX + spanX;
-        maxY = minY + spanY;
+        const float texel = (2.0f * radius) / static_cast<float>(params.mapSize);
+        if (texel > 0.0f) {
+            lsCenter.x = std::floor(lsCenter.x / texel) * texel;
+            lsCenter.y = std::floor(lsCenter.y / texel) * texel;
+        }
     }
 
-    // Light space looks down -Z, so near/far map from -zMax / -zMin.
-    // A minimal depth span would make the projection singular.
-    float nearPlane = -zMax;
-    float farPlane  = -zMin;
-    if (farPlane - nearPlane < 0.01f) farPlane = nearPlane + 0.01f;
+    const glm::vec3 snappedCenter =
+        glm::vec3(glm::inverse(lightRot) * glm::vec4(lsCenter, 1.0f));
 
-    const glm::mat4 proj = glm::ortho(minX, maxX, minY, maxY, nearPlane, farPlane);
+    // Looking along the light direction, so moving a point along that direction
+    // changes only its light-space Z: extrusion costs no lateral texel density.
+    const glm::mat4 lightView =
+        glm::lookAt(snappedCenter - dir * eyeDistance, snappedCenter, lightUp(dir));
+
+    // The box spans [-radius, radius] laterally and [-halfDepth, halfDepth] along
+    // the light axis about the centre; light space looks down -Z, so the eye sits
+    // eyeDistance in front of it. halfDepth >= radius, so the depth span cannot
+    // collapse.
+    const glm::mat4 proj = glm::ortho(-radius, radius,
+                                      -radius, radius,
+                                      1.0f, eyeDistance + halfDepth);
     return proj * lightView;
 }
