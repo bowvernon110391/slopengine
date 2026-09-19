@@ -927,29 +927,6 @@ int main(int argc, char* argv[])
             renderer.forwardPass().setPcfRadius(pcfRadius);
         }
 
-        // --- Shadow depth offset --------------------------------------------
-        // glPolygonOffset applied while filling the maps. The pass culls front
-        // faces, so it stores each caster's far surface and the shadow detaches
-        // from the contact by roughly the caster's thickness along the light.
-        // Negative units pull the stored depth back toward the light and close
-        // that gap; too negative and acne returns, because this is spending the
-        // headroom the front-face culling gives away.
-        //
-        // Units are depth-buffer LSBs, not world units, and the LSB size is
-        // driver-defined, so the useful value must be swept rather than derived.
-        // Keep the factor at 0 unless units alone cannot close the gap: it scales
-        // with depth slope, so a negative factor bites hardest at grazing angles.
-        ImGui::Separator();
-        ImGui::TextUnformatted("Shadow depth offset");
-        float offsetFactor = renderer.shadowPass().polygonOffsetFactor();
-        float offsetUnits  = renderer.shadowPass().polygonOffsetUnits();
-        bool  offsetChanged = false;
-        offsetChanged |= ImGui::SliderFloat("Offset factor", &offsetFactor, -4.0f, 4.0f, "%.2f");
-        offsetChanged |= ImGui::SliderFloat("Offset units", &offsetUnits, -8192.0f, 0.0f, "%.0f");
-        if (offsetChanged) {
-            renderer.shadowPass().setPolygonOffset(offsetFactor, offsetUnits);
-        }
-
         if (shadowViews.empty()) {
             ImGui::TextUnformatted(shadowDebug
                 ? "None (no light casts a shadow)"
@@ -971,10 +948,9 @@ int main(int argc, char* argv[])
         }
 
         // --- Shadow bias ----------------------------------------------------
-        // The depth bias the shadow lookup compares with. It is a secondary lever
-        // now that polygon offset does the contact-gap work (see the Shadow Maps
-        // tab): the two are opposing mechanisms, so prefer tuning one and leaving
-        // the other at zero rather than fighting them against each other.
+        // The depth bias the shadow lookup compares with. It is the only guard
+        // against acne now that polygon offset is off, and these three terms trade
+        // directly against each other (see slopeScaledBias() in common/lighting.glsl).
         //
         // Note the multiplication in slopeScaledBias(): with the base bias at 0
         // the whole expression is 0 and the Max bias cap below is inert, so Slope
@@ -1002,9 +978,8 @@ int main(int argc, char* argv[])
         ImGui::Separator();
         ImGui::TextWrapped(
             "Lower bias keeps shadows attached to the object casting them but lets "
-            "acne through; higher bias does the reverse. Polygon offset is doing the "
-            "contact-gap work, so leave this at zero unless acne shows up: raising "
-            "both means pulling in opposite directions at once.");
+            "acne through; higher bias does the reverse. Polygon offset is disabled, "
+            "so these are the only guard against acne.");
         ImGui::EndTabItem();
         }
 
